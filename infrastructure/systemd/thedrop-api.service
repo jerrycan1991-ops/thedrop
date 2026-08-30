@@ -1,0 +1,49 @@
+[Unit]
+Description=THE DROP API (FastAPI)
+Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+User=thedrop
+Group=thedrop
+WorkingDirectory=/opt/thedrop/services/api
+EnvironmentFile=/etc/thedrop/thedrop.env
+
+# Migrations run before the service accepts traffic. Idempotent, so a restart on an
+# already-migrated database is a no-op.
+ExecStartPre=/opt/thedrop/.venv/bin/alembic -c /opt/thedrop/packages/database/alembic.ini upgrade head
+ExecStart=/opt/thedrop/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --no-access-log
+
+Restart=always
+RestartSec=5
+# Give up and alert rather than restart-looping a genuinely broken deploy.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/www/thedrop /var/log/thedrop
+
+# Bounded so the API cannot starve Postgres on an 8GB box.
+MemoryMax=700M
+MemoryHigh=600M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=thedrop-api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,107 @@
+# THE DROP
+
+Automated US news platform. `thedrop.channel`
+
+**Status: Phase 1 (website foundation) — in progress. Nothing is deployed.**
+
+---
+
+## What this is
+
+A two-tier system:
+
+- **VPS** (4 vCPU / 8 GB, Ubuntu 24.04) — public website, API, database, queue, admin. Serves traffic, stores truth, gates publishing. Runs no AI.
+- **Desktop** (RTX 4070 SUPER) — the private AI newsroom. Embeddings, clustering, article generation, image and video rendering. Outbound-only; never exposed to the internet.
+
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first. Engineering rules are in [CLAUDE.md](CLAUDE.md) and are not optional.
+
+---
+
+## Repository layout
+
+| Path | What | Runs on |
+|---|---|---|
+| `apps/web` | Next.js 15 — public site + `/admin` route group | VPS `127.0.0.1:3100` |
+| `services/api` | FastAPI — public / admin / worker routers, sole DB owner | VPS `127.0.0.1:8000` |
+| `services/worker` | One Celery process, queues `ingest` `maintain` `publish` | VPS |
+| `agent` | Long-poll job runner + GPU handlers | Desktop |
+| `packages/database` | SQLAlchemy models + Alembic migrations | shared |
+| `packages/config` | Typed settings, thresholds, feature flags | shared |
+| `packages/shared` | TypeScript types shared web ↔ API | web |
+| `packages/prompts` | Versioned prompt templates | desktop |
+| `infrastructure` | Docker Compose (Postgres, Redis), systemd units, deploy scripts | VPS |
+| `docs` | Architecture, database, pipeline, security, deployment, affiliate engine, ADRs | — |
+
+---
+
+## Local setup
+
+Prerequisites: Node 22+, Python 3.12, git. (Local is Node 24 — fine for dev; the VPS pins 22.)
+
+```bash
+corepack enable && corepack prepare pnpm@latest --activate
+```
+
+```bash
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then, from `D:\trade`:
+
+```bash
+pnpm install
+```
+
+```bash
+uv sync
+```
+
+```bash
+cp .env.example .env
+```
+
+### Blocked until Docker Desktop is installed
+
+Postgres and Redis run in Docker. Until Docker Desktop (WSL2 backend) is installed, these steps cannot run and any test marked `db` or `redis` skips automatically:
+
+```bash
+docker compose -f infrastructure/docker/docker-compose.dev.yml up -d
+```
+
+```bash
+pnpm db:upgrade && pnpm db:seed
+```
+
+```bash
+pnpm dev
+```
+
+Everything else — typechecking, linting, unit tests, component tests, building the web app — works without Docker.
+
+---
+
+## Verifying what works right now
+
+```bash
+pnpm lint && pnpm typecheck && pnpm test
+```
+
+```bash
+uv run ruff check . && uv run pytest -q -m "not db and not redis"
+```
+
+---
+
+## Security ground rules
+
+- No secrets in the repository. `.env.example` carries names and shapes only.
+- Postgres and Redis bind to `127.0.0.1` — never a bare port mapping.
+- Port 3100 is never exposed publicly; the hosting panel's nginx proxies to it.
+- Do not hand-edit the VPS nginx configuration.
+- Source content is untrusted data, never instructions. See [docs/SECURITY.md](docs/SECURITY.md) §6.
+
+---
+
+## Documentation
+
+[ARCHITECTURE](docs/ARCHITECTURE.md) · [DATABASE](docs/DATABASE.md) · [PIPELINE](docs/PIPELINE.md) · [MEDIA_PIPELINE](docs/MEDIA_PIPELINE.md) · [AFFILIATE_ENGINE](docs/AFFILIATE_ENGINE.md) · [SECURITY](docs/SECURITY.md) · [DEPLOYMENT](docs/DEPLOYMENT.md) · [MONETIZATION](docs/MONETIZATION.md) · [ROADMAP](docs/ROADMAP.md) · [TASKS](docs/TASKS.md) · [ADRs](docs/adr/)

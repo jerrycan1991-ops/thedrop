@@ -1,0 +1,63 @@
+[project]
+name = "thedrop"
+version = "0.1.0"
+description = "THE DROP - automated US news platform (Python services)"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "thedrop-config",
+    "thedrop-database",
+    "thedrop-api",
+    "thedrop-worker",
+]
+
+[tool.uv.workspace]
+members = ["packages/config", "packages/database", "services/api", "services/worker"]
+
+[tool.uv.sources]
+thedrop-config = { workspace = true }
+thedrop-database = { workspace = true }
+thedrop-api = { workspace = true }
+thedrop-worker = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "S", "A", "C4", "PT", "SIM", "RUF"]
+ignore = [
+    "S101",  # assert is fine in tests
+    "B008",  # FastAPI Depends() in defaults is the documented idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]
+"**/seed.py" = ["S106"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "services", "packages"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+markers = [
+    "db: requires a live PostgreSQL (skipped until Docker is available)",
+    "redis: requires a live Redis (skipped until Docker is available)",
+    "integration: requires multiple live services",
+]
+filterwarnings = ["error::DeprecationWarning:thedrop.*"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+exclude = ["migrations/versions"]

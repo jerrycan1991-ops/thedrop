@@ -1,0 +1,70 @@
+"""Celery application.
+
+ONE worker process on the VPS, three named queues, embedded beat.
+
+Hard rule: this process runs with ``-B`` (embedded beat) and must never be scaled
+past a single replica, or every scheduled task fires twice. If a second worker is ever
+needed, split beat into its own unit first. This is repeated in the systemd unit and
+in DEPLOYMENT.md because it is the kind of thing that gets forgotten at 2 a.m.
+
+Heavy AI and media work never runs here -- it is a ``jobs`` row leased by the desktop
+(ADR-0003).
+"""
+
+from __future__ import annotations
+
+from celery import Celery
+from celery.schedules import crontab
+
+from thedrop_config import get_settings
+
+settings = get_settings()
+
+celery_app = Celery(
+    "thedrop",
+    broker=settings.celery_broker_url,
+    backend=settings.celery_result_backend,
+    include=["app.tasks.maintain", "app.tasks.ingest", "app.tasks.publish"],
+)
+
+celery_app.conf.update(
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+    # Ack after the task finishes, so a worker killed mid-task requeues instead of
+    # silently dropping the work.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    # Prefetch 1: tasks here vary wildly in duration and a greedy prefetch on a
+    # 2-concurrency worker leaves one slot idle behind a long task.
+    worker_prefetch_multiplier=1,
+    worker_max_tasks_per_child=200,
+    task_time_limit=600,
+    task_soft_time_limit=540,
+    broker_connection_retry_on_startup=True,
+    task_default_queue="maintain",
+    task_routes={
+        "app.tasks.ingest.*": {"queue": "ingest"},
+        "app.tasks.maintain.*": {"queue": "maintain"},
+        "app.tasks.publish.*": {"queue": "publish"},
+    },
+)
+
+celery_app.conf.beat_schedule = {
+    # Returns jobs abandoned by an offline desktop to the queue. The single most
+    # important periodic task: without it, a power cut on the desktop strands work.
+    "reap-expired-job-leases": {
+        "task": "app.tasks.maintain.reap_expired_leases",
+        "schedule": 60.0,
+    },
+    "mark-stale-workers-offline": {
+        "task": "app.tasks.maintain.mark_stale_workers_offline",
+        "schedule": 60.0,
+    },
+    "reset-provider-quotas": {
+        "task": "app.tasks.maintain.reset_provider_quotas",
+        "schedule": crontab(hour=0, minute=5),
+    },
+}

@@ -1,0 +1,51 @@
+[Unit]
+Description=THE DROP Celery worker (ingest, maintain, publish)
+Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
+After=network-online.target docker.service thedrop-api.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+User=thedrop
+Group=thedrop
+WorkingDirectory=/opt/thedrop/services/worker
+EnvironmentFile=/etc/thedrop/thedrop.env
+
+# -B embeds the beat scheduler in this worker.
+#
+# HARD RULE: this unit must NEVER run more than one instance. Two instances means
+# every scheduled task fires twice -- duplicate ingestion, duplicate publishing,
+# duplicate spend. If a second worker is ever needed, split beat into its own unit
+# FIRST. See ADR-0003 and docs/DEPLOYMENT.md §5.
+ExecStart=/opt/thedrop/.venv/bin/celery -A app.celery_app worker -B \
+  -Q ingest,maintain,publish \
+  --concurrency=2 \
+  --loglevel=INFO \
+  --without-gossip --without-mingle
+
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=180
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/www/thedrop /var/log/thedrop /opt/thedrop/run
+
+MemoryMax=700M
+MemoryHigh=600M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=thedrop-worker
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,46 @@
+[Unit]
+Description=THE DROP web (Next.js)
+Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
+After=network-online.target thedrop-api.service
+Wants=network-online.target thedrop-api.service
+
+[Service]
+Type=exec
+User=thedrop
+Group=thedrop
+WorkingDirectory=/opt/thedrop/apps/web
+EnvironmentFile=/etc/thedrop/thedrop.env
+
+Environment=NODE_ENV=production
+# Bound to loopback. The hosting panel's nginx proxies to it; port 3100 is never
+# exposed publicly.
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3100
+
+ExecStart=/usr/bin/node /opt/thedrop/apps/web/.next/standalone/apps/web/server.js
+
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/www/thedrop /opt/thedrop/apps/web/.next/cache
+
+MemoryMax=800M
+MemoryHigh=700M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=thedrop-web
+
+[Install]
+WantedBy=multi-user.target

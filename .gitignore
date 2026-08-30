@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Build output
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Environment — NEVER commit real secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Data / runtime
+media/
+!apps/web/public/media/.gitkeep
+*.db
+*.sqlite3
+.celerybeat-schedule
+celerybeat-schedule*
+
+# Logs
+*.log
+logs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+playwright-report/
+test-results/
+
+# AI worker local artifacts (desktop only, never committed)
+agent/models/
+agent/cache/
+agent/output/
+*.safetensors
+*.gguf
+*.ckpt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

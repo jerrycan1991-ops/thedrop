@@ -1,0 +1,401 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   THE DROP — design tokens
+
+   Every colour, radius and elevation in the product resolves to a token defined
+   here. Components must never contain a raw hex value; a lint rule and a test
+   enforce it, because a hardcoded colour is a theme that will break.
+
+   Dark is the default. The brand is a dark-first premium publication, so the base
+   `:root` palette IS the dark palette — a viewer with no stated preference and no
+   JavaScript still gets the intended design rather than a flash of white.
+
+   Light mode is a deliberate, separately-tuned palette. It is not an inversion:
+   inverted dark themes read as washed out and cheap, which is the opposite of the
+   brief.
+
+   Resolution order:
+     1. [data-theme="dark"]  / [data-theme="light"]  — explicit user choice
+     2. prefers-color-scheme: light                  — system preference
+     3. :root                                        — dark, the brand default
+   ========================================================================== */
+
+:root {
+  /* ---- surfaces -------------------------------------------------------- */
+  --bg: #08090b;               /* page ground — near-black, faintly cool */
+  --bg-sunken: #050506;        /* wells, insets, code */
+  --bg-elevated: #101216;      /* cards, panels */
+  --bg-elevated-hover: #171a1f;
+  --bg-overlay: #16191e;       /* menus, dialogs, popovers */
+  --bg-inverse: #f6f7f9;
+
+  /* ---- text ------------------------------------------------------------ */
+  --fg: #f4f6f8;               /* primary copy */
+  --fg-muted: #a2abb8;         /* metadata, deks, secondary UI */
+  --fg-subtle: #6c7583;        /* timestamps, captions, disabled */
+  --fg-inverse: #0a0b0d;
+  --fg-on-accent: #12060a;
+
+  /* ---- lines ----------------------------------------------------------- */
+  --border: #1e232b;
+  --border-strong: #2d343f;
+  --border-focus: var(--accent);
+
+  /* ---- brand ----------------------------------------------------------- */
+  /* Vivid orange, not newspaper blue. Reads as energy and momentum, holds up in
+     a 24px avatar, and stays distinct from the breaking-news red. */
+  --accent: #ff5a1f;
+  --accent-hover: #ff7442;
+  --accent-pressed: #e14710;
+  --accent-subtle: #2a1409;    /* tinted surface for accent contexts */
+  --accent-fg: #ffb695;        /* accent text on dark ground, AA-safe */
+
+  /* ---- status ---------------------------------------------------------- */
+  --breaking: #ff2d38;         /* reserved. Breaking only. Never decorative. */
+  --breaking-subtle: #2b0d10;
+  --positive: #2ecc71;
+  --positive-subtle: #0b2419;
+  --warning: #f5a524;
+  --warning-subtle: #2a1f08;
+  --danger: #f04438;
+  --danger-subtle: #2b1010;
+  --info: #4d9fff;
+  --info-subtle: #0b1c2e;
+
+  /* ---- category accents ------------------------------------------------ */
+  --cat-trending: #ff5a1f;
+  --cat-politics: #4d9fff;
+  --cat-entertainment: #c084fc;
+  --cat-sports: #2ecc71;
+  --cat-business: #f5a524;
+  --cat-technology: #22d3ee;
+  --cat-world: #94a3b8;
+  --cat-picks: #f59e0b;
+
+  /* ---- elevation ------------------------------------------------------- */
+  /* Dark themes read depth from light, not from shadow. Elevated surfaces get a
+     hairline top highlight; shadows stay subtle so cards do not look muddy. */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 16px 48px rgb(0 0 0 / 0.55);
+  --highlight-top: inset 0 1px 0 rgb(255 255 255 / 0.05);
+
+  /* ---- geometry -------------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+
+  --content-width: 44rem;      /* article measure, ~70 characters */
+  --page-width: 80rem;
+
+  /* ---- motion ---------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 120ms;
+  --duration-base: 220ms;
+
+  color-scheme: dark;
+}
+
+/* System preference: light — unless the reader has explicitly chosen dark. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #ffffff;
+    --bg-sunken: #f4f5f7;
+    --bg-elevated: #ffffff;
+    --bg-elevated-hover: #f7f8fa;
+    --bg-overlay: #ffffff;
+    --bg-inverse: #0a0b0d;
+
+    --fg: #0d0f12;
+    --fg-muted: #5a6472;
+    --fg-subtle: #8b95a3;
+    --fg-inverse: #f6f7f9;
+    --fg-on-accent: #ffffff;
+
+    --border: #e4e7ec;
+    --border-strong: #cbd2da;
+
+    --accent: #e14710;
+    --accent-hover: #c93c0a;
+    --accent-pressed: #a83208;
+    --accent-subtle: #fff1eb;
+    --accent-fg: #b8380a;
+
+    --breaking: #d90d18;
+    --breaking-subtle: #fff0f1;
+    --positive: #17853f;
+    --positive-subtle: #eafaf0;
+    --warning: #b26a00;
+    --warning-subtle: #fff6e6;
+    --danger: #c9271b;
+    --danger-subtle: #fef1f0;
+    --info: #1667d1;
+    --info-subtle: #eef5ff;
+
+    --cat-trending: #e14710;
+    --cat-politics: #1667d1;
+    --cat-entertainment: #8b3fd6;
+    --cat-sports: #17853f;
+    --cat-business: #b26a00;
+    --cat-technology: #0a8fa8;
+    --cat-world: #5a6472;
+    --cat-picks: #b26a00;
+
+    --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.06);
+    --shadow-md: 0 4px 16px rgb(16 24 40 / 0.08);
+    --shadow-lg: 0 16px 48px rgb(16 24 40 / 0.12);
+    --highlight-top: none;
+
+    color-scheme: light;
+  }
+}
+
+/* Explicit choice always wins, in both directions. */
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-sunken: #f4f5f7;
+  --bg-elevated: #ffffff;
+  --bg-elevated-hover: #f7f8fa;
+  --bg-overlay: #ffffff;
+  --bg-inverse: #0a0b0d;
+
+  --fg: #0d0f12;
+  --fg-muted: #5a6472;
+  --fg-subtle: #8b95a3;
+  --fg-inverse: #f6f7f9;
+  --fg-on-accent: #ffffff;
+
+  --border: #e4e7ec;
+  --border-strong: #cbd2da;
+
+  --accent: #e14710;
+  --accent-hover: #c93c0a;
+  --accent-pressed: #a83208;
+  --accent-subtle: #fff1eb;
+  --accent-fg: #b8380a;
+
+  --breaking: #d90d18;
+  --breaking-subtle: #fff0f1;
+  --positive: #17853f;
+  --positive-subtle: #eafaf0;
+  --warning: #b26a00;
+  --warning-subtle: #fff6e6;
+  --danger: #c9271b;
+  --danger-subtle: #fef1f0;
+  --info: #1667d1;
+  --info-subtle: #eef5ff;
+
+  --cat-trending: #e14710;
+  --cat-politics: #1667d1;
+  --cat-entertainment: #8b3fd6;
+  --cat-sports: #17853f;
+  --cat-business: #b26a00;
+  --cat-technology: #0a8fa8;
+  --cat-world: #5a6472;
+  --cat-picks: #b26a00;
+
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.06);
+  --shadow-md: 0 4px 16px rgb(16 24 40 / 0.08);
+  --shadow-lg: 0 16px 48px rgb(16 24 40 / 0.12);
+  --highlight-top: none;
+
+  color-scheme: light;
+}
+
+/* ==========================================================================
+   Tailwind theme bridge — exposes the tokens above as utilities
+   (bg-surface, text-muted, border-strong, ...). Components use these; they
+   never reference a raw value.
+   ========================================================================== */
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sunken: var(--bg-sunken);
+  --color-surface: var(--bg-elevated);
+  --color-surface-hover: var(--bg-elevated-hover);
+  --color-overlay: var(--bg-overlay);
+  --color-inverse: var(--bg-inverse);
+
+  --color-fg: var(--fg);
+  --color-muted: var(--fg-muted);
+  --color-subtle: var(--fg-subtle);
+  --color-fg-inverse: var(--fg-inverse);
+  --color-on-accent: var(--fg-on-accent);
+
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-fg: var(--accent-fg);
+
+  --color-breaking: var(--breaking);
+  --color-breaking-subtle: var(--breaking-subtle);
+  --color-positive: var(--positive);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+
+  --font-display: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Visible, branded focus. Never `outline: none` without a replacement. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background-color: var(--accent);
+  color: var(--fg-on-accent);
+}
+
+/* ==========================================================================
+   Editorial typography
+   ========================================================================== */
+
+.display {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+  text-wrap: balance;
+}
+
+.headline {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+.dek {
+  color: var(--fg-muted);
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.meta {
+  color: var(--fg-subtle);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Article body. Measure is capped at ~70 characters via --content-width. */
+.prose-drop {
+  font-size: 1.125rem;
+  line-height: 1.72;
+  color: var(--fg);
+  text-wrap: pretty;
+}
+
+.prose-drop > * + * {
+  margin-top: 1.35em;
+}
+
+.prose-drop h2 {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  margin-top: 2.25em;
+}
+
+.prose-drop h3 {
+  font-size: 1.2rem;
+  font-weight: 650;
+  margin-top: 1.9em;
+}
+
+.prose-drop a {
+  color: var(--accent-fg);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.prose-drop a:hover {
+  color: var(--accent);
+}
+
+.prose-drop blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 1.15rem;
+  font-size: 1.2rem;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.prose-drop ul,
+.prose-drop ol {
+  padding-left: 1.35rem;
+}
+
+.prose-drop li + li {
+  margin-top: 0.5em;
+}
+
+.prose-drop ul {
+  list-style: disc;
+}
+
+.prose-drop ol {
+  list-style: decimal;
+}
+
+/* Wide content must scroll inside itself; the page never scrolls sideways. */
+.scroll-x {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}

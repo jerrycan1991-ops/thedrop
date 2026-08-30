@@ -1,0 +1,35 @@
+{
+  "name": "thedrop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "THE DROP - automated US news platform",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n web,api,worker -c cyan,magenta,yellow \"pnpm dev:web\" \"pnpm dev:api\" \"pnpm dev:worker\"",
+    "dev:web": "pnpm --filter @thedrop/web dev",
+    "dev:api": "uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 --app-dir services/api",
+    "dev:worker": "uv run celery -A services.worker.app.celery_app worker -B -Q ingest,maintain,publish -c 2 --loglevel=INFO",
+    "build": "pnpm --filter @thedrop/web build",
+    "start": "pnpm --filter @thedrop/web start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter @thedrop/web test:e2e",
+    "db:upgrade": "uv run alembic -c packages/database/alembic.ini upgrade head",
+    "db:downgrade": "uv run alembic -c packages/database/alembic.ini downgrade -1",
+    "db:revision": "uv run alembic -c packages/database/alembic.ini revision --autogenerate -m",
+    "db:seed": "uv run python -m thedrop_database.seed",
+    "py:test": "uv run pytest -q",
+    "py:lint": "uv run ruff check .",
+    "py:format": "uv run ruff format .",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm py:lint && pnpm py:test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
+}
