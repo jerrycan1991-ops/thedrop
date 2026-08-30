@@ -1,6 +1,7 @@
 import "server-only";
 
 import { query, queryOne } from "@/lib/db/client";
+import { isoColumn, pyIso } from "@/lib/db/datetime";
 
 /**
  * Read queries backing the public API.
@@ -30,9 +31,9 @@ interface ArticleSummaryRow {
   headline: string;
   dek: string;
   article_type: string;
-  published_at: Date | null;
-  updated_at_public: Date | null;
-  first_published_at: Date | null;
+  published_at_iso: string | null;
+  updated_at_public_iso: string | null;
+  first_published_at_iso: string | null;
   reading_time_seconds: number;
   is_sponsored: boolean;
   category_slug: string;
@@ -75,25 +76,17 @@ interface ArticleDetailRow extends ArticleSummaryRow {
  * Month and day are zero-padded; an unpublished article has no public path.
  */
 function articlePath(row: ArticleSummaryRow): string {
-  if (row.first_published_at === null) {
+  if (row.first_published_at_iso === null) {
     return `/preview/${row.public_id}`;
   }
-  const d = row.first_published_at;
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
+  // The ISO string starts YYYY-MM-DD in UTC, which is the same date Python derives
+  // from the tz-aware datetime. Slicing avoids reintroducing a Date object.
+  const [yyyy, mm, dd] = row.first_published_at_iso.slice(0, 10).split("-");
   return `/${row.category_slug}/${yyyy}/${mm}/${dd}/${row.slug}`;
 }
 
-/**
- * Python emits `datetime.isoformat()`, which yields `+00:00` for a UTC-aware value —
- * NOT JavaScript's default `Z`. Matching this exactly matters: the baseline compares
- * the string.
- */
-function isoUtc(value: Date | null): string | null {
-  if (value === null) return null;
-  return value.toISOString().replace(/\.(\d{3})Z$/, ".$1000+00:00");
-}
+// Timestamps are formatted by PostgreSQL (see lib/db/datetime.ts) so microsecond
+// precision survives and a zero fraction is omitted, exactly as Python does.
 
 function serializeSummary(row: ArticleSummaryRow): Record<string, unknown> {
   return {
@@ -109,8 +102,8 @@ function serializeSummary(row: ArticleSummaryRow): Record<string, unknown> {
       description: row.category_description,
       accentToken: row.category_accent_token,
     },
-    publishedAt: isoUtc(row.published_at),
-    updatedAt: isoUtc(row.updated_at_public),
+    publishedAt: pyIso(row.published_at_iso),
+    updatedAt: pyIso(row.updated_at_public_iso),
     readingTimeSeconds: row.reading_time_seconds,
     isSponsored: row.is_sponsored,
     heroImage:
@@ -144,9 +137,9 @@ const PUBLISHED_SELECT = `
     a.headline,
     a.dek,
     a.article_type,
-    a.published_at,
-    a.updated_at_public,
-    a.first_published_at,
+    ${isoColumn("a.published_at", "published_at_iso")},
+    ${isoColumn("a.updated_at_public", "updated_at_public_iso")},
+    ${isoColumn("a.first_published_at", "first_published_at_iso")},
     a.reading_time_seconds,
     a.is_sponsored,
     c.slug                   AS category_slug,
@@ -267,8 +260,9 @@ export async function getArticleBySlug(
         ORDER BY r.display_order`,
       [row.public_id],
     ),
-    query<{ correction_type: string; summary: string; detail: string; issued_at: Date }>(
-      `SELECT co.correction_type, co.summary, co.detail, co.issued_at
+    query<{ correction_type: string; summary: string; detail: string; issued_at_iso: string }>(
+      `SELECT co.correction_type, co.summary, co.detail,
+              ${isoColumn("co.issued_at", "issued_at_iso")}
          FROM corrections co
          JOIN articles a ON a.id = co.article_id
         WHERE a.public_id::text = $1 AND co.is_public = true`,
@@ -300,7 +294,7 @@ export async function getArticleBySlug(
       type: c.correction_type,
       summary: c.summary,
       detail: c.detail,
-      issuedAt: isoUtc(c.issued_at),
+      issuedAt: pyIso(c.issued_at_iso),
     })),
     seo: {
       // Python falls back to the headline/dek when the SEO field is blank.
@@ -317,4 +311,4 @@ export async function getArticleBySlug(
 }
 
 /** Exported for unit tests that pin the pagination contract. */
-export const __testing = { articlePath, isoUtc, serializeSummary };
+export const __testing = { articlePath, serializeSummary };

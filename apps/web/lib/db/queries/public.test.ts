@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { pyIso } from "@/lib/db/datetime";
+
 import { __testing } from "./public";
 
-const { articlePath, isoUtc } = __testing;
+const { articlePath } = __testing;
 
 /**
  * These pin the serialisation contract captured from FastAPI at tag v0.1.0-hybrid.
@@ -14,7 +16,7 @@ function row(overrides: Record<string, unknown> = {}) {
     public_id: "0d087426-7a69-4598-8e91-8bd7f9c094d8",
     slug: "a-story",
     category_slug: "trending",
-    first_published_at: new Date(Date.UTC(2026, 7, 20, 12, 0, 0)),
+    first_published_at_iso: "2026-08-20T12:00:00.000000",
     ...overrides,
   } as Parameters<typeof articlePath>[0];
 }
@@ -26,35 +28,37 @@ describe("articlePath", () => {
 
   it("zero-pads month and day", () => {
     // "2026/8/5" and "2026/08/05" would be two URLs for one article.
-    const path = articlePath(row({ first_published_at: new Date(Date.UTC(2026, 0, 5)) }));
+    const path = articlePath(row({ first_published_at_iso: "2026-01-05T00:00:00.000000" }));
     expect(path).toBe("/trending/2026/01/05/a-story");
   });
 
   it("uses UTC, not local time", () => {
     // Late-UTC timestamps roll to the previous day in western zones; the path must
     // not depend on where the server happens to run.
-    const path = articlePath(row({ first_published_at: new Date(Date.UTC(2026, 7, 20, 23, 59)) }));
+    const path = articlePath(row({ first_published_at_iso: "2026-08-20T23:59:00.000000" }));
     expect(path).toBe("/trending/2026/08/20/a-story");
   });
 
   it("returns a preview path when unpublished", () => {
-    expect(articlePath(row({ first_published_at: null }))).toBe(
+    expect(articlePath(row({ first_published_at_iso: null }))).toBe(
       "/preview/0d087426-7a69-4598-8e91-8bd7f9c094d8",
     );
   });
 });
 
-describe("isoUtc", () => {
-  it("matches Python's datetime.isoformat() offset form", () => {
-    // Python emits "+00:00"; JavaScript's toISOString emits "Z". The API baseline
-    // compares the string, so this difference is a contract break, not cosmetic.
-    expect(isoUtc(new Date(Date.UTC(2026, 7, 20, 12, 0, 0)))).toBe(
-      "2026-08-20T12:00:00.000000+00:00",
-    );
+describe("pyIso", () => {
+  it("omits the fraction when microseconds are zero, as Python does", () => {
+    expect(pyIso("2026-08-20T12:00:00.000000")).toBe("2026-08-20T12:00:00+00:00");
+  });
+
+  it("keeps six digits when microseconds are non-zero", () => {
+    // JavaScript Dates hold milliseconds, so this precision only survives because
+    // PostgreSQL formats the value and we never build a Date from it.
+    expect(pyIso("2026-08-20T12:00:00.123456")).toBe("2026-08-20T12:00:00.123456+00:00");
   });
 
   it("passes null through", () => {
-    expect(isoUtc(null)).toBeNull();
+    expect(pyIso(null)).toBeNull();
   });
 });
 
