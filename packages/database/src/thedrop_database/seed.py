@@ -11,7 +11,6 @@ known value. Run with:  ``pnpm db:seed``
 from __future__ import annotations
 
 import logging
-import os
 import sys
 
 from sqlalchemy import select
@@ -205,8 +204,12 @@ def seed() -> int:
                 created["ad_placements"] = created.get("ad_placements", 0) + 1
 
     # Admin user needs the roles committed first, so it runs in a second transaction.
-    password = os.environ.get("ADMIN_INITIAL_PASSWORD", "")
-    email = os.environ.get("ADMIN_EMAIL", "").lower()
+    #
+    # Read from settings, not os.environ: pydantic-settings loads .env into the Settings
+    # object, it does NOT export those values into the process environment. Reading
+    # os.environ here silently skipped admin creation whenever .env was the only source.
+    password = settings.admin_initial_password
+    email = settings.admin_email.lower()
 
     if not email or not password:
         logger.warning(

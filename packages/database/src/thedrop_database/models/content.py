@@ -121,8 +121,24 @@ class Article(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     canonical_url: Mapped[str | None] = mapped_column(Text)
     noindex: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # `articles` and `media_assets` reference each other: an article names its hero
+    # asset, and an asset names the article it belongs to. That cycle has no valid
+    # CREATE TABLE ordering, and without use_alter Alembic silently gives up sorting
+    # and emits the tables alphabetically -- producing a migration that fails on the
+    # first foreign key it hits.
+    #
+    # use_alter defers THIS side to an ALTER TABLE after both tables exist, which
+    # breaks the cycle. The name is explicit because ALTER-added constraints cannot
+    # use the metadata naming convention.
     hero_media_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("media_assets.id", ondelete="SET NULL"), index=True
+        BigInteger,
+        ForeignKey(
+            "media_assets.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_articles_hero_media_id_media_assets",
+        ),
+        index=True,
     )
 
     is_sponsored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

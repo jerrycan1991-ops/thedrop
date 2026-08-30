@@ -175,6 +175,10 @@ class Settings(BaseSettings):
         default_factory=lambda: secrets.token_urlsafe(48), alias="SESSION_SECRET"
     )
     session_cookie_name: str = Field(default="thedrop_session", alias="SESSION_COOKIE_NAME")
+    # Used only by the seed script to create the first admin. Absent means no admin is
+    # created -- the seed never invents a default credential.
+    admin_email: str = Field(default="", alias="ADMIN_EMAIL")
+    admin_initial_password: str = Field(default="", alias="ADMIN_INITIAL_PASSWORD")
     session_absolute_ttl_hours: int = Field(default=12, gt=0, alias="SESSION_ABSOLUTE_TTL_HOURS")
     session_idle_ttl_hours: int = Field(default=2, gt=0, alias="SESSION_IDLE_TTL_HOURS")
 

@@ -33,7 +33,10 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = [".venv", "migrations/versions"]
+# Generated migrations are machine output -- Alembic renders long `comment=` strings
+# on one line. The bare "migrations/versions" pattern did not match the nested
+# packages/database/... path, so they were being lint-gated by accident.
+extend-exclude = [".venv", "**/migrations/versions/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "S", "A", "C4", "PT", "SIM", "RUF"]
