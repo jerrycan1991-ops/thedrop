@@ -19,6 +19,7 @@ rejected. It never writes to the database.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -272,6 +273,23 @@ def _session_for(client: httpx.Client, endpoints: list[tuple[str, str, str, bool
     return login(client)
 
 
+def _logout(client: httpx.Client, session_id: str | None) -> None:
+    """Release the session this run created.
+
+    Without it every capture/compare leaves a live session in Redis for the full
+    two-hour idle window; a CI job running on every push would accumulate them
+    indefinitely.
+    """
+    if session_id is None:
+        return
+    # Cleanup failure must not fail a verification run; the session expires anyway.
+    with contextlib.suppress(httpx.HTTPError):
+        client.post(
+            "/api/v1/admin/auth/logout",
+            headers={"Cookie": f"thedrop_session={session_id}"},
+        )
+
+
 def capture(base_url: str, groups: str | None = None) -> int:
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     endpoints = selected_endpoints(groups)
@@ -334,6 +352,8 @@ def compare(base_url: str, groups: str | None = None) -> int:
             else:
                 print(f"  match   {name:38s} {actual['status']}")
 
+        _logout(client, session_id)
+
     if failures:
         print(f"\n{len(failures)} endpoint(s) differ: {', '.join(failures)}")
         return 1
@@ -383,6 +403,9 @@ def parity(url_a: str, url_b: str, groups: str | None, extra: str | None) -> int
                     print(f"            B ({f}): {json.dumps(rb.get(f))[:400]}")
             else:
                 print(f"  match   {name:34s} {ra['status']}  {path}")
+
+        _logout(a, sa)
+        _logout(b, sb)
 
     if failures:
         print(f"\n{len(failures)} path(s) differ between the two servers.")

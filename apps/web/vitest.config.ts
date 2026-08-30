@@ -9,7 +9,11 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["**/*.test.{ts,tsx}"],
-    exclude: ["node_modules", ".next", "e2e"],
+    // `.next*` covers .next and .next-verify. The standalone build output bundles a
+    // copy of node_modules, and some dependencies ship their own *.test.ts — without
+    // this, a production build silently adds 78 vendored tests to our suite and the
+    // reported count stops meaning anything.
+    exclude: ["**/node_modules/**", "**/.next*/**", "e2e"],
     env: {
       // The pool is constructed lazily and never connects during these tests -- they
       // exercise pure serialisation and validation helpers. A value is required only

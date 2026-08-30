@@ -1,6 +1,12 @@
 import type { NextRequest } from "next/server";
 
-import { QueryValidator, handleRoute, newRequestId, ok, validationFailed } from "@/lib/api/contract";
+import {
+  QueryValidator,
+  handleRoute,
+  ok,
+  requestIdFrom,
+  validationFailed,
+} from "@/lib/api/contract";
 import { listArticles } from "@/lib/db/queries/public";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +19,7 @@ export const dynamic = "force-dynamic";
  * that matches nothing — 200 with an empty list, never 404.
  */
 export async function GET(request: NextRequest) {
-  const requestId = newRequestId();
+  const requestId = requestIdFrom(request);
 
   return handleRoute(requestId, async () => {
     const validator = new QueryValidator(request.nextUrl.searchParams);

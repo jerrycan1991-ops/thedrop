@@ -34,6 +34,19 @@ const isVercel = process.env.VERCEL === "1";
 const isProd = process.env.NODE_ENV === "production";
 
 const nextConfig: NextConfig = {
+  /**
+   * Build output directory.
+   *
+   * Defaults to `.next` for production (the systemd unit and Vercel both expect it).
+   * Running `next build` while `next dev` is live rewrites that directory underneath
+   * the dev server and corrupts its chunk map — it starts failing with
+   * `Cannot find module './NNN.js'` on any route whose chunk changed, which looks
+   * exactly like an application bug and is not one.
+   *
+   * Verification builds set NEXT_DIST_DIR to keep the two apart.
+   */
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
+
   ...(isVercel ? {} : { output: "standalone" as const }),
   reactStrictMode: true,
   poweredByHeader: false,
@@ -89,6 +102,17 @@ const nextConfig: NextConfig = {
 
     return [
       { source: "/:path*", headers: securityHeaders },
+      {
+        // API responses must match FastAPI's headers exactly, or the migration
+        // silently changes the contract. FastAPI sends X-Frame-Options: DENY on every
+        // response; the site-wide rule above uses SAMEORIGIN, which is correct for
+        // pages but is a weakening for the API. Later rules win on duplicate keys.
+        //
+        // Caught by tests/test_auth_me_parity.py, which compares the full header set
+        // rather than a chosen few.
+        source: "/api/:path*",
+        headers: [{ key: "X-Frame-Options", value: "DENY" }],
+      },
       {
         source: "/media/:path*",
         headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],

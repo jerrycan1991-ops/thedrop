@@ -3,9 +3,9 @@ import type { NextRequest } from "next/server";
 import {
   type FieldError,
   handleRoute,
-  newRequestId,
   notFound,
   ok,
+  requestIdFrom,
   validationFailed,
 } from "@/lib/api/contract";
 import { getArticleBySlug } from "@/lib/db/queries/public";
@@ -41,8 +41,8 @@ function parsePathInt(name: string, raw: string, errors: FieldError[]): number |
  * 404 rather than a redirect — serving one article at two paths creates duplicates
  * that split ranking signals.
  */
-export async function GET(_request: NextRequest, context: RouteContext) {
-  const requestId = newRequestId();
+export async function GET(request: NextRequest, context: RouteContext) {
+  const requestId = requestIdFrom(request);
 
   return handleRoute(requestId, async () => {
     const { category, year, month, day, slug } = await context.params;

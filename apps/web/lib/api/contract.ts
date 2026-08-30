@@ -28,6 +28,18 @@ export function newRequestId(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
+/**
+ * Request id for this response, echoing an inbound `X-Request-ID` when present.
+ *
+ * Mirrors the FastAPI middleware (`request.headers.get("x-request-id") or uuid4`), so
+ * a trace id set by an upstream proxy survives regardless of which implementation
+ * handles the route. Without this, a request crossing from FastAPI to Node loses its
+ * correlation id exactly where you most want to follow it.
+ */
+export function requestIdFrom(request: { headers: { get(name: string): string | null } }): string {
+  return request.headers.get("x-request-id") || newRequestId();
+}
+
 function withRequestId(response: NextResponse, requestId: string): NextResponse {
   response.headers.set("X-Request-ID", requestId);
   return response;

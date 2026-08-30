@@ -36,6 +36,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     postgres_up = _port_open("127.0.0.1", int(os.environ.get("POSTGRES_PORT", 5432)))
     redis_up = _port_open("127.0.0.1", int(os.environ.get("REDIS_PORT", 6379)))
     api_up = _port_open("127.0.0.1", int(os.environ.get("API_PORT", 8000)))
+    web_up = _port_open("127.0.0.1", int(os.environ.get("WEB_PORT", 3100)))
 
     skip_db = pytest.mark.skip(
         reason="PostgreSQL not reachable on 127.0.0.1:5432 - start Docker Desktop, then "
@@ -53,3 +54,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_redis)
         if "api" in item.keywords and not api_up:
             item.add_marker(skip_api)
+        if "web" in item.keywords and not web_up:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="Next.js not reachable on 127.0.0.1:3100 - run `pnpm dev:web`"
+                )
+            )

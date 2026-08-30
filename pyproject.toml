@@ -57,6 +57,7 @@ markers = [
     "db: requires a live PostgreSQL (skipped until Docker is available)",
     "redis: requires a live Redis (skipped until Docker is available)",
     "api: requires the FastAPI service running on 127.0.0.1:8000",
+    "web: requires the Next.js service running on 127.0.0.1:3100",
     "integration: requires multiple live services",
 ]
 filterwarnings = ["error::DeprecationWarning:thedrop.*"]
