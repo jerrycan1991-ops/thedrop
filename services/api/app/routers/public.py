@@ -9,16 +9,16 @@ Everything here is unauthenticated and cacheable. Nothing here can write.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-
-from app.deps import SessionDep
 from thedrop_database.enums import ArticleStatus
 from thedrop_database.models import Article, Category
+
+from app.deps import SessionDep
 
 router = APIRouter(prefix="/api/v1/public", tags=["public"])
 
@@ -68,7 +68,7 @@ def _serialize_summary(article: Article) -> dict[str, Any]:
     }
 
 
-def _published_query():  # noqa: ANN202 - internal query builder
+def _published_query():
     return (
         select(Article)
         .options(selectinload(Article.category), selectinload(Article.hero_media))
@@ -200,4 +200,7 @@ def get_article(
 def latest(db: SessionDep, response: Response, limit: Annotated[int, Query(ge=1, le=50)] = 20):
     response.headers["Cache-Control"] = _CACHE_CONTROL
     rows = db.scalars(_published_query().limit(limit)).all()
-    return {"items": [_serialize_summary(a) for a in rows], "generatedAt": datetime.now().isoformat()}
+    return {
+        "items": [_serialize_summary(a) for a in rows],
+        "generatedAt": datetime.now(UTC).isoformat(),
+    }

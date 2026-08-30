@@ -8,6 +8,7 @@ dependencies = [
     "thedrop-database",
     "thedrop-api",
     "thedrop-worker",
+    "email-validator>=2.3.0",
 ]
 
 [tool.uv.workspace]

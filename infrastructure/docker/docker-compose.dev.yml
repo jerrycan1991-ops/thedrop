@@ -3,10 +3,19 @@
 # Requires Docker Desktop with the WSL2 backend. Nothing else in the repo needs Docker:
 # typechecking, linting, unit tests and the Next.js build all run without it.
 #
-# Start:  docker compose -f infrastructure/docker/docker-compose.dev.yml up -d
-# Stop:   docker compose -f infrastructure/docker/docker-compose.dev.yml down
-# Reset:  docker compose -f infrastructure/docker/docker-compose.dev.yml down -v
-#         (-v drops the volume. Safe locally. NEVER on the VPS.)
+# ALWAYS start this through the pnpm scripts:
+#
+#   pnpm db:up      pnpm db:down      pnpm db:ps      pnpm db:logs
+#
+# They pass `--env-file .env` explicitly, and that matters. Compose resolves a bare
+# `.env` relative to the PROJECT directory, which defaults to the directory holding
+# this file -- infrastructure/docker/ -- not the repo root. Without the explicit flag
+# Compose finds no .env, silently falls back to the defaults below, and starts Postgres
+# with a different password than DATABASE_URL expects. The failure surfaces much later
+# as an authentication error that looks nothing like a missing env file.
+#
+# Reset (destroys local data):
+#   docker compose -f infrastructure/docker/docker-compose.dev.yml --env-file .env down -v
 
 name: thedrop-dev
 

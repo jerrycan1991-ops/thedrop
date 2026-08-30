@@ -18,6 +18,10 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter @thedrop/web test:e2e",
+    "db:up": "docker compose -f infrastructure/docker/docker-compose.dev.yml --env-file .env up -d",
+    "db:down": "docker compose -f infrastructure/docker/docker-compose.dev.yml --env-file .env down",
+    "db:ps": "docker compose -f infrastructure/docker/docker-compose.dev.yml --env-file .env ps",
+    "db:logs": "docker compose -f infrastructure/docker/docker-compose.dev.yml --env-file .env logs -f",
     "db:upgrade": "uv run alembic -c packages/database/alembic.ini upgrade head",
     "db:downgrade": "uv run alembic -c packages/database/alembic.ini downgrade -1",
     "db:revision": "uv run alembic -c packages/database/alembic.ini revision --autogenerate -m",
@@ -28,6 +32,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm py:lint && pnpm py:test"
   },
   "devDependencies": {
+    "@types/node": "^22.10.2",
     "concurrently": "^9.1.0",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2"

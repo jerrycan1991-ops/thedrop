@@ -15,8 +15,8 @@ import os
 import sys
 
 from sqlalchemy import select
-
 from thedrop_config import get_settings
+
 from thedrop_database import session_scope
 from thedrop_database.models import (
     AdPlacement,
@@ -32,13 +32,13 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("seed")
 
 CATEGORIES = [
-    ("trending", "Trending", "What the country is paying attention to right now.", 1, "--cat-trending"),
-    ("politics", "Politics", "US politics, policy and power.", 2, "--cat-politics"),
-    ("entertainment", "Entertainment", "Film, television, music and celebrity.", 3, "--cat-entertainment"),
-    ("sports", "Sports", "Leagues, games and the stories around them.", 4, "--cat-sports"),
-    ("business", "Business", "Markets, companies and the economy.", 5, "--cat-business"),
-    ("technology", "Technology", "Products, platforms and the people building them.", 6, "--cat-technology"),
-    ("world", "World", "International news that matters to a US audience.", 7, "--cat-world"),
+    ("trending", "Trending", "What the country is paying attention to right now.", 1),
+    ("politics", "Politics", "US politics, policy and power.", 2),
+    ("entertainment", "Entertainment", "Film, television, music and celebrity.", 3),
+    ("sports", "Sports", "Leagues, games and the stories around them.", 4),
+    ("business", "Business", "Markets, companies and the economy.", 5),
+    ("technology", "Technology", "Products, platforms and the people building them.", 6),
+    ("world", "World", "International news that matters to a US audience.", 7),
 ]
 
 ROLES = [
@@ -117,7 +117,7 @@ def seed() -> int:
     created: dict[str, int] = {}
 
     with session_scope() as db:
-        for slug, name, description, order, token in CATEGORIES:
+        for slug, name, description, order in CATEGORIES:
             if db.scalar(select(Category).where(Category.slug == slug)) is None:
                 db.add(
                     Category(
@@ -125,7 +125,8 @@ def seed() -> int:
                         name=name,
                         description=description,
                         sort_order=order,
-                        accent_token=token,
+                        # Matches the --cat-* custom properties in globals.css.
+                        accent_token=f"--cat-{slug}",
                         is_active=True,
                     )
                 )
@@ -161,16 +162,25 @@ def seed() -> int:
                 )
                 created["settings"] = created.get("settings", 0) + 1
 
-        if db.scalar(select(AffiliateDisclosure).where(AffiliateDisclosure.slug == "default")) is None:
+        disclosure_exists = db.scalar(
+            select(AffiliateDisclosure).where(AffiliateDisclosure.slug == "default")
+        )
+        if disclosure_exists is None:
             db.add(
                 AffiliateDisclosure(
-                    slug="default", version=1, text_body=DEFAULT_DISCLOSURE, placement_default="both"
+                    slug="default",
+                    version=1,
+                    text_body=DEFAULT_DISCLOSURE,
+                    placement_default="both",
                 )
             )
             created["disclosures"] = 1
 
         for name, template, condition, priority in CTA_TEMPLATES:
-            if db.scalar(select(AffiliateCtaTemplate).where(AffiliateCtaTemplate.name == name)) is None:
+            template_exists = db.scalar(
+                select(AffiliateCtaTemplate).where(AffiliateCtaTemplate.name == name)
+            )
+            if template_exists is None:
                 db.add(
                     AffiliateCtaTemplate(
                         name=name,

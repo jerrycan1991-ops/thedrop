@@ -9,11 +9,11 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
-
-from app.celery_app import celery_app
 from thedrop_database import session_scope
 from thedrop_database.enums import JobStatus, WorkerStatus
 from thedrop_database.models import Job, Provider, WorkerNode
+
+from app.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 

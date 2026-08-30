@@ -16,11 +16,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
+from thedrop_config import get_settings
 
 from app import __version__
 from app.logging_config import configure_logging, request_id_var
 from app.routers import admin, health, public, worker
-from thedrop_config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ SECURITY_HEADERS = {
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ANN201 - FastAPI lifespan signature
+async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
     logger.info(
@@ -103,6 +104,31 @@ def create_app() -> FastAPI:
             },
         )
         return response
+
+    @app.exception_handler(OperationalError)
+    async def database_unavailable_handler(request: Request, exc: OperationalError) -> JSONResponse:
+        """A database outage is 503, not 500.
+
+        500 says "this endpoint is broken" and invites someone to go debugging the
+        route. 503 says "a dependency is down", which is both accurate and the signal
+        a load balancer, an uptime monitor and the web app's fallback path all expect.
+
+        The driver's message is logged but never returned: it contains the connection
+        string, including the user and host.
+        """
+        logger.error(
+            "database unavailable",
+            extra={"path": request.url.path, "method": request.method, "error": str(exc.orig)},
+        )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "detail": "Database unavailable",
+                "hint": "Is PostgreSQL running? See docs/DEPLOYMENT.md §4.",
+                "requestId": getattr(request.state, "request_id", None),
+            },
+            headers={"Retry-After": "30"},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

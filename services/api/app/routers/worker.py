@@ -18,10 +18,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
-
-from app.deps import SessionDep, WorkerDep
 from thedrop_database.enums import JobStatus, WorkerStatus
 from thedrop_database.models import Job
+
+from app.deps import SessionDep, WorkerDep
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/worker", tags=["worker"])

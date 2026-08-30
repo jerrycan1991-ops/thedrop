@@ -13,7 +13,6 @@ from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
-
 from thedrop_config import get_settings
 
 
@@ -27,6 +26,17 @@ def _build_engine() -> Engine:
         max_overflow=5,
         pool_pre_ping=True,
         pool_recycle=1800,
+        # Fail fast when Postgres is unreachable.
+        #
+        # Without an explicit connect_timeout, psycopg inherits the OS TCP timeout --
+        # roughly two minutes on Windows. Every request then holds a uvicorn worker
+        # for the full duration, so a database outage degrades from "endpoints return
+        # an error" to "the whole API stops responding". Five seconds is far longer
+        # than a healthy loopback connection needs.
+        connect_args={"connect_timeout": 5},
+        # Cap the wait for a pooled connection too, so a saturated pool cannot queue
+        # requests indefinitely behind a stalled one.
+        pool_timeout=10,
         echo=False,
         future=True,
     )

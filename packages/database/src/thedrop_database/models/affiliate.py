@@ -268,7 +268,9 @@ class AffiliateDisclosure(Base, PrimaryKeyMixin, TimestampMixin):
     """
 
     __tablename__ = "affiliate_disclosures"
-    __table_args__ = (UniqueConstraint("slug", "version", name="uq_affiliate_disclosures_slug_ver"),)
+    __table_args__ = (
+        UniqueConstraint("slug", "version", name="uq_affiliate_disclosures_slug_ver"),
+    )
 
     slug: Mapped[str] = mapped_column(String(64), nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

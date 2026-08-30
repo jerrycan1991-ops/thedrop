@@ -62,7 +62,14 @@ class TestWorkerTokens:
 
 class TestRequestSigning:
     def test_signature_is_deterministic(self) -> None:
-        args = ("secret", "POST", "/api/v1/worker/heartbeat", b'{"a":1}', "2026-08-30T00:00:00+00:00", "n1")
+        args = (
+            "secret",
+            "POST",
+            "/api/v1/worker/heartbeat",
+            b'{"a":1}',
+            "2026-08-30T00:00:00+00:00",
+            "n1",
+        )
         assert sign_request(*args) == sign_request(*args)
 
     def test_signature_covers_the_body(self) -> None:

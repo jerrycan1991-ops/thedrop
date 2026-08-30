@@ -13,7 +13,9 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, MetaData, func, text
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+
+# N811: PgUUID is a SQLAlchemy type, not a constant, despite the uppercase source name.
+from sqlalchemy.dialects.postgresql import UUID as PgUUID  # noqa: N811
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Explicit naming so Alembic autogenerate produces stable, diffable constraint names

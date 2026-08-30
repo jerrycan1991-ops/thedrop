@@ -26,7 +26,12 @@ if TYPE_CHECKING:
 article_tags = Table(
     "article_tags",
     Base.metadata,
-    Column("article_id", BigInteger, ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True),
+    Column(
+        "article_id",
+        BigInteger,
+        ForeignKey("articles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     Column("tag_id", BigInteger, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
     Index("ix_article_tags_tag_id", "tag_id"),
 )

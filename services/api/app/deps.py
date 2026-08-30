@@ -16,7 +16,6 @@ import redis
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
-
 from thedrop_config import Settings, get_settings
 from thedrop_database import get_session
 from thedrop_database.models import User, WorkerNode
@@ -30,7 +29,7 @@ _redis_client: redis.Redis | None = None
 
 
 def get_redis() -> redis.Redis:
-    global _redis_client  # noqa: PLW0603 - one client per process, created lazily
+    global _redis_client
     if _redis_client is None:
         settings = get_settings()
         _redis_client = redis.from_url(
@@ -114,7 +113,7 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-def require_role(*allowed: str):  # noqa: ANN201 - returns a FastAPI dependency
+def require_role(*allowed: str):
     """Authorization dependency. ``admin`` implicitly satisfies every requirement."""
 
     def _check(user: CurrentUser) -> User:

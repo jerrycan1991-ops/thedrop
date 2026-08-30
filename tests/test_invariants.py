@@ -22,12 +22,12 @@ from thedrop_database.models import affiliate as affiliate_models
 
 class TestEditorialCommercialSeparation:
     def test_editorial_types_are_the_expected_four(self) -> None:
-        assert EDITORIAL_ARTICLE_TYPES == {
+        assert {
             ArticleType.NEWS,
             ArticleType.ANALYSIS,
             ArticleType.OPINION,
             ArticleType.COMMENTARY,
-        }
+        } == EDITORIAL_ARTICLE_TYPES
 
     def test_no_commercial_type_is_also_an_editorial_type(self) -> None:
         overlap = {t.value for t in CommercialType} & {t.value for t in ArticleType}
@@ -45,7 +45,8 @@ class TestEditorialCommercialSeparation:
     def test_affiliate_article_table_carries_the_constraint(self) -> None:
         # Matched by suffix: SQLAlchemy's naming convention may or may not have been
         # applied to `.name` depending on when the constraint was attached.
-        names = [str(c.name) for c in affiliate_models.AffiliateArticle.__table__.constraints if c.name]
+        table = affiliate_models.AffiliateArticle.__table__
+        names = [str(c.name) for c in table.constraints if c.name]
         assert any(name.endswith("not_editorial_type") for name in names), names
 
 
@@ -55,19 +56,19 @@ class TestMediaRights:
         assert RightsStatus.PROHIBITED not in PUBLISHABLE_RIGHTS
 
     def test_publishable_set_is_exactly_the_four_safe_statuses(self) -> None:
-        assert PUBLISHABLE_RIGHTS == {
+        assert {
             RightsStatus.ORIGINAL_AI,
             RightsStatus.LICENSED,
             RightsStatus.PUBLIC_DOMAIN,
             RightsStatus.VALIDATED_CC,
-        }
+        } == PUBLISHABLE_RIGHTS
 
 
 class TestProductDataProvenance:
     def test_only_api_and_admin_entry_are_trusted(self) -> None:
         # ADR-0009. Scraped structured data and OG tags are too unreliable to render
         # as a current price or a star rating.
-        assert TRUSTED_FIELD_SOURCES == {FieldSource.API, FieldSource.ADMIN_OVERRIDE}
+        assert {FieldSource.API, FieldSource.ADMIN_OVERRIDE} == TRUSTED_FIELD_SOURCES
         assert FieldSource.STRUCTURED_DATA not in TRUSTED_FIELD_SOURCES
         assert FieldSource.OG_TAG not in TRUSTED_FIELD_SOURCES
         assert FieldSource.UNKNOWN not in TRUSTED_FIELD_SOURCES
@@ -84,7 +85,8 @@ class TestProductDataProvenance:
         assert "FieldSource.API" in source
 
     def test_product_table_enforces_provenance_in_the_schema(self) -> None:
-        names = [str(c.name) for c in affiliate_models.AffiliateProduct.__table__.constraints if c.name]
+        table = affiliate_models.AffiliateProduct.__table__
+        names = [str(c.name) for c in table.constraints if c.name]
         assert any(name.endswith("price_requires_provenance") for name in names), names
         assert any(name.endswith("rating_requires_provenance") for name in names), names
 
