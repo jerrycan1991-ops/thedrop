@@ -1,0 +1,23 @@
+{
+  "body": {
+    "articles": {
+      "byStatus": {},
+      "publishedToday": 0
+    },
+    "generatedAt": "<volatile>",
+    "jobs": {
+      "byStatus": {},
+      "oldestQueuedJobAgeSeconds": null,
+      "queueDepth": 0
+    },
+    "redis": true,
+    "workers": []
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/system/metrics"
+  },
+  "status": 200
+}

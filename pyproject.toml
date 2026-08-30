@@ -56,6 +56,7 @@ asyncio_mode = "auto"
 markers = [
     "db: requires a live PostgreSQL (skipped until Docker is available)",
     "redis: requires a live Redis (skipped until Docker is available)",
+    "api: requires the FastAPI service running on 127.0.0.1:8000",
     "integration: requires multiple live services",
 ]
 filterwarnings = ["error::DeprecationWarning:thedrop.*"]

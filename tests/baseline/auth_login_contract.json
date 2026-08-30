@@ -1,0 +1,27 @@
+{
+  "body_keys": [
+    "user"
+  ],
+  "cache_control": null,
+  "content_type": "application/json",
+  "cookie_flags": {
+    "domain": null,
+    "httponly": true,
+    "max-age": "43200",
+    "path": "/",
+    "samesite": "lax",
+    "secure": false
+  },
+  "cookie_name": "thedrop_session",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/admin/auth/login"
+  },
+  "status": 200,
+  "user_keys": [
+    "displayName",
+    "email",
+    "id",
+    "roles"
+  ]
+}

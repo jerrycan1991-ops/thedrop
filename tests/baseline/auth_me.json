@@ -1,0 +1,18 @@
+{
+  "body": {
+    "displayName": "Administrator",
+    "email": "<redacted>",
+    "id": "0d087426-7a69-4598-8e91-8bd7f9c094d8",
+    "mfaEnabled": false,
+    "roles": [
+      "admin"
+    ]
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/auth/me"
+  },
+  "status": 200
+}

@@ -1,0 +1,99 @@
+{
+  "body": [
+    {
+      "description": "Master ad switch.",
+      "isProtected": false,
+      "key": "ads.enabled",
+      "value": {
+        "value": false
+      }
+    },
+    {
+      "description": "Master affiliate switch.",
+      "isProtected": false,
+      "key": "affiliate.enabled",
+      "value": {
+        "value": false
+      }
+    },
+    {
+      "description": "A price older than this is never rendered as current.",
+      "isProtected": true,
+      "key": "affiliate.price_max_age_hours",
+      "value": {
+        "value": 24
+      }
+    },
+    {
+      "description": "Emergency AI kill switch.",
+      "isProtected": true,
+      "key": "ai.enabled",
+      "value": {
+        "value": false
+      }
+    },
+    {
+      "description": "Scheduling preference only. Never a reason to publish.",
+      "isProtected": false,
+      "key": "daily_target",
+      "value": {
+        "max": 30,
+        "min": 20
+      }
+    },
+    {
+      "description": "Publishing confidence gates. Never lowered automatically.",
+      "isProtected": true,
+      "key": "gates.thresholds",
+      "value": {
+        "auto_publish": 95,
+        "second_review": 70,
+        "verify_then_publish": 85
+      }
+    },
+    {
+      "description": "Master ingestion switch.",
+      "isProtected": false,
+      "key": "ingestion.enabled",
+      "value": {
+        "value": false
+      }
+    },
+    {
+      "description": "Rights statuses permitted to auto-publish.",
+      "isProtected": true,
+      "key": "media.publishable_rights",
+      "value": {
+        "value": [
+          "ORIGINAL_AI",
+          "LICENSED",
+          "PUBLIC_DOMAIN",
+          "VALIDATED_CC"
+        ]
+      }
+    },
+    {
+      "description": "Master publish switch.",
+      "isProtected": true,
+      "key": "publishing.enabled",
+      "value": {
+        "value": false
+      }
+    },
+    {
+      "description": "High-risk load-bearing claims need two independent sources or an authority.",
+      "isProtected": true,
+      "key": "verification.high_risk_requires_corroboration",
+      "value": {
+        "value": true
+      }
+    }
+  ],
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/settings"
+  },
+  "status": 200
+}

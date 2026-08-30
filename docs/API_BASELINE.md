@@ -191,7 +191,56 @@ live servers, so temporary fixture data can exercise those paths. Phase 2 used s
 temporary articles to verify pagination across four pages, hero-image serialisation,
 wrong-date 404s and wrong-category 404s, then removed them.
 
-## 6. Rollback
+## 6. Session format — a migration contract
+
+Captured before any auth migration, because Node must read exactly this. Verified by
+`tests/test_session_lifecycle.py`.
+
+**Redis key:** `session:<id>` where `<id>` is `secrets.token_urlsafe(32)` — the same
+opaque value carried in the `thedrop_session` cookie. The cookie holds no user data and
+no signature; the payload never leaves the server.
+
+**Value:** a JSON object with exactly these six keys.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `user_id` | int | Internal `users.id`, not the public UUID |
+| `email` | str | Convenience copy; the database is authoritative |
+| `roles` | list[str] | Convenience copy; **re-read from the database every request**, so a revoked role takes effect immediately |
+| `epoch` | int | Snapshot of `users.session_epoch` at login |
+| `created_at` | str | ISO 8601 |
+| `absolute_expiry` | str | ISO 8601, login + 12 h |
+
+**Two independent expiries, both required:**
+
+- **Idle, 2 h** — the Redis key TTL, refreshed on *every* authenticated request.
+- **Absolute, 12 h** — `absolute_expiry` inside the payload, checked in application code.
+
+A sliding TTL alone would let an active session live forever, which is why the second
+one exists. Dropping the TTL refresh is the failure mode most likely to survive review:
+sessions would simply expire two hours after login regardless of activity, and nobody
+notices until two hours have passed.
+
+**Rejection paths, all 401:**
+
+| Condition | `detail` | Side effect |
+|---|---|---|
+| No cookie, or empty cookie | `Not authenticated` | none |
+| Key absent from Redis | `Session expired` | none |
+| `absolute_expiry` in the past | `Session expired` | key deleted |
+| User missing or inactive | `Account unavailable` | key deleted |
+| `epoch` ≠ `users.session_epoch` | `Session invalidated` | key deleted |
+
+**Cookie flags** (pinned in `tests/baseline/auth_login_contract.json`): `httponly=true`,
+`samesite=lax`, `path=/`, `max-age=43200`, `secure` in production only, `domain` from
+`COOKIE_DOMAIN`.
+
+> Authenticated baselines redact `email` — the admin's login identifier is half a
+> credential pair and does not belong in version control. `user_id` and the public UUID
+> are captured as-is; if the database is reseeded they change and `auth_me` will diff,
+> which is a legitimate signal to re-capture rather than a regression.
+
+## 7. Rollback
 
 The hybrid architecture is tagged. Returning to it is one command:
 

@@ -36,12 +36,20 @@ VOLATILE_KEYS = frozenset(
         "serverTime",
         "requestId",
         "lastHeartbeatAt",
+        # Age of the oldest queued job: real elapsed time, so it moves between runs.
+        # Appears only in the authenticated metrics response.
+        "oldestQueuedJobAgeSeconds",
         "ts",
         "createdAt",
         "publishedAt",
         "updatedAt",
     }
 )
+
+# Values that are stable but must not be committed. The admin's login identifier is
+# half of a credential pair and lives in a gitignored .env; a baseline file is not the
+# place to publish it. Both sides of a comparison are redacted, so equality still holds.
+REDACT_KEYS = frozenset({"email"})
 
 # name -> (method, path). Names become filenames, so keep them stable.
 ENDPOINTS: list[tuple[str, str, str]] = [
@@ -88,6 +96,101 @@ ENDPOINTS += [
 ]
 
 
+# ---------------------------------------------------------------- authenticated
+#
+# Admin endpoints are captured TWICE: once anonymously (above, pinning the 401) and
+# once with a real session (here, pinning the actual response body). The anonymous
+# capture alone cannot detect a migration that returns a valid 200 with the wrong
+# shape -- which is precisely the failure mode that matters.
+AUTH_ENDPOINTS: list[tuple[str, str, str]] = [
+    ("auth_me", "GET", "/api/v1/admin/auth/me"),
+    ("auth_admin_articles", "GET", "/api/v1/admin/articles"),
+    ("auth_admin_articles_paged", "GET", "/api/v1/admin/articles?page=1&page_size=5"),
+    ("auth_admin_articles_filtered", "GET", "/api/v1/admin/articles?status_filter=draft"),
+    ("auth_admin_settings", "GET", "/api/v1/admin/settings"),
+    ("auth_admin_metrics", "GET", "/api/v1/admin/system/metrics"),
+]
+
+#: Cookie attributes are part of the auth contract and are captured separately from
+#: the value, which must never be written to a file.
+COOKIE_ATTRIBUTES = ("httponly", "secure", "samesite", "path", "domain", "max-age")
+
+
+class LoginError(RuntimeError):
+    pass
+
+
+def login(client: httpx.Client) -> str:
+    """Authenticate against the live FastAPI login endpoint and return the session id.
+
+    Credentials come from settings (the same .env the services read); they are never
+    hardcoded and never written to a baseline file.
+    """
+    from thedrop_config import get_settings
+
+    settings = get_settings()
+    email, password = settings.admin_email, settings.admin_initial_password
+    if not email or not password:
+        raise LoginError(
+            "ADMIN_EMAIL / ADMIN_INITIAL_PASSWORD are not set; cannot capture "
+            "authenticated baselines."
+        )
+
+    response = client.post(
+        "/api/v1/admin/auth/login",
+        json={"email": email, "password": password},
+    )
+    if response.status_code != 200:
+        raise LoginError(f"login returned {response.status_code}: {response.text[:200]}")
+
+    session_id = response.cookies.get("thedrop_session")
+    if not session_id:
+        raise LoginError("login succeeded but set no thedrop_session cookie")
+    return session_id
+
+
+def login_contract(client: httpx.Client) -> dict[str, Any]:
+    """Capture the login response contract, including cookie FLAGS but not the value."""
+    from thedrop_config import get_settings
+
+    settings = get_settings()
+    response = client.post(
+        "/api/v1/admin/auth/login",
+        json={"email": settings.admin_email, "password": settings.admin_initial_password},
+    )
+
+    raw_cookie = response.headers.get("set-cookie", "")
+    flags = {
+        attr: (attr in raw_cookie.lower())
+        for attr in ("httponly", "secure")
+    }
+    for attr in ("samesite", "path", "max-age", "domain"):
+        marker = f"{attr}="
+        lowered = raw_cookie.lower()
+        if marker in lowered:
+            start = lowered.index(marker) + len(marker)
+            end = lowered.find(";", start)
+            flags[attr] = raw_cookie[start : end if end != -1 else len(raw_cookie)].strip()
+        else:
+            flags[attr] = None
+
+    body = normalise(response.json())
+    # The user's public_id is stable, but redact anything that could identify the
+    # operator's real credentials.
+    return {
+        "request": {"method": "POST", "path": "/api/v1/admin/auth/login"},
+        "status": response.status_code,
+        "content_type": response.headers.get("content-type", "").split(";")[0],
+        "cache_control": response.headers.get("cache-control"),
+        "cookie_flags": flags,
+        "cookie_name": "thedrop_session",
+        "body_keys": sorted(body.keys()) if isinstance(body, dict) else None,
+        "user_keys": sorted(body["user"].keys())
+        if isinstance(body, dict) and isinstance(body.get("user"), dict)
+        else None,
+    }
+
+
 def group_of(path: str) -> str:
     """Which migration group an endpoint belongs to.
 
@@ -103,27 +206,49 @@ def group_of(path: str) -> str:
     return "health"
 
 
-def selected_endpoints(groups: str | None) -> list[tuple[str, str, str]]:
+def selected_endpoints(groups: str | None) -> list[tuple[str, str, str, bool]]:
+    """(name, method, path, needs_session) for the requested groups.
+
+    Anonymous and authenticated captures live side by side: the `admin` group pins the
+    401s, the `authenticated` group pins the real response bodies.
+    """
+    everything: list[tuple[str, str, str, bool]] = [
+        (n, m, p, False) for n, m, p in ENDPOINTS
+    ] + [(n, m, p, True) for n, m, p in AUTH_ENDPOINTS]
+
     if not groups:
-        return ENDPOINTS
+        return everything
+
     wanted = {g.strip() for g in groups.split(",") if g.strip()}
-    return [e for e in ENDPOINTS if group_of(e[2]) in wanted]
+    return [
+        e
+        for e in everything
+        if ("authenticated" if e[3] else group_of(e[2])) in wanted
+    ]
 
 
 def normalise(value: Any) -> Any:
     """Replace volatile values so two runs of identical code compare equal."""
     if isinstance(value, dict):
-        return {
-            k: ("<volatile>" if k in VOLATILE_KEYS and value[k] is not None else normalise(v))
-            for k, v in value.items()
-        }
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if k in REDACT_KEYS and v is not None:
+                out[k] = "<redacted>"
+            elif k in VOLATILE_KEYS and v is not None:
+                out[k] = "<volatile>"
+            else:
+                out[k] = normalise(v)
+        return out
     if isinstance(value, list):
         return [normalise(v) for v in value]
     return value
 
 
-def fetch(client: httpx.Client, method: str, path: str) -> dict[str, Any]:
-    response = client.request(method, path)
+def fetch(
+    client: httpx.Client, method: str, path: str, session_id: str | None = None
+) -> dict[str, Any]:
+    cookies = {"thedrop_session": session_id} if session_id else None
+    response = client.request(method, path, cookies=cookies)
     try:
         body = normalise(response.json())
     except ValueError:
@@ -140,16 +265,38 @@ def fetch(client: httpx.Client, method: str, path: str) -> dict[str, Any]:
     }
 
 
+def _session_for(client: httpx.Client, endpoints: list[tuple[str, str, str, bool]]) -> str | None:
+    """Log in once if any selected endpoint needs a session, otherwise not at all."""
+    if not any(needs for *_rest, needs in endpoints):
+        return None
+    return login(client)
+
+
 def capture(base_url: str, groups: str | None = None) -> int:
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     endpoints = selected_endpoints(groups)
+
     with httpx.Client(base_url=base_url, timeout=20.0, follow_redirects=False) as client:
-        for name, method, path in endpoints:
-            record = fetch(client, method, path)
+        session_id = _session_for(client, endpoints)
+
+        for name, method, path, needs_session in endpoints:
+            record = fetch(client, method, path, session_id if needs_session else None)
             (BASELINE_DIR / f"{name}.json").write_text(
                 json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
-            print(f"  captured {name:38s} {record['status']}")
+            marker = "auth" if needs_session else "anon"
+            print(f"  captured [{marker}] {name:34s} {record['status']}")
+
+        # The login contract itself: status, cookie flags and body shape. The cookie
+        # VALUE is never written -- a baseline file containing a live session id would
+        # be a credential in version control.
+        if session_id is not None:
+            record = login_contract(client)
+            (BASELINE_DIR / "auth_login_contract.json").write_text(
+                json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(f"  captured [auth] {'login_contract':34s} {record['status']}")
+
     print(f"\n{len(endpoints)} endpoints captured to {BASELINE_DIR}")
     return 0
 
@@ -162,14 +309,16 @@ def compare(base_url: str, groups: str | None = None) -> int:
     endpoints = selected_endpoints(groups)
     failures: list[str] = []
     with httpx.Client(base_url=base_url, timeout=20.0, follow_redirects=False) as client:
-        for name, method, path in endpoints:
+        session_id = _session_for(client, endpoints)
+
+        for name, method, path, needs_session in endpoints:
             path_file = BASELINE_DIR / f"{name}.json"
             if not path_file.exists():
                 print(f"  SKIP    {name:38s} (no baseline)")
                 continue
 
             expected = json.loads(path_file.read_text(encoding="utf-8"))
-            actual = fetch(client, method, path)
+            actual = fetch(client, method, path, session_id if needs_session else None)
 
             diffs = []
             for field in ("status", "content_type", "cache_control", "body"):
@@ -201,20 +350,26 @@ def parity(url_a: str, url_b: str, groups: str | None, extra: str | None) -> int
     implementations directly, so temporary fixture data can exercise the paths the
     baseline cannot reach. Nothing in tests/baseline is read or written.
     """
-    paths = [(name, m, p) for name, m, p in selected_endpoints(groups)]
+    paths = list(selected_endpoints(groups))
     if extra:
         for i, raw in enumerate(extra.split(",")):
             raw = raw.strip()
             if raw:
-                paths.append((f"extra_{i}", "GET", raw))
+                paths.append((f"extra_{i}", "GET", raw, False))
 
     failures: list[str] = []
     with (
         httpx.Client(base_url=url_a, timeout=30.0, follow_redirects=False) as a,
         httpx.Client(base_url=url_b, timeout=30.0, follow_redirects=False) as b,
     ):
-        for name, method, path in paths:
-            ra, rb = fetch(a, method, path), fetch(b, method, path)
+        # Each server issues its own session: a cookie minted by one is not
+        # necessarily valid on the other during a migration.
+        sa = _session_for(a, paths)
+        sb = _session_for(b, paths)
+
+        for name, method, path, needs in paths:
+            ra = fetch(a, method, path, sa if needs else None)
+            rb = fetch(b, method, path, sb if needs else None)
             diffs = [
                 f
                 for f in ("status", "content_type", "cache_control", "body")

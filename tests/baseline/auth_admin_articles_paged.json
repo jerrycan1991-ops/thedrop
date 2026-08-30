@@ -1,0 +1,15 @@
+{
+  "body": {
+    "items": [],
+    "page": 1,
+    "pageSize": 5,
+    "total": 0
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/articles?page=1&page_size=5"
+  },
+  "status": 200
+}
