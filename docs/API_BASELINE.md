@@ -152,7 +152,39 @@ mandatory, not aspirational:
 
 ---
 
-## 5. Rollback
+## 5. Migration status
+
+| Group | Endpoints | Implementation | Verified |
+|---|---|---|---|
+| `public` | 4 routes / 16 baseline cases | **Both** — Node serves them; FastAPI still live | baseline + live parity |
+| `health` | 2 | FastAPI only | baseline |
+| `admin` | 7 | FastAPI only | baseline |
+| `worker` | 5 | FastAPI only | baseline |
+
+Since Phase 2 the public endpoints exist in **both** implementations. Next.js route
+handlers under `app/api/v1/public/` take precedence over the `afterFiles` rewrite in
+`next.config.ts`; everything else still falls through to FastAPI. Nothing was deleted.
+
+Three commands, three different questions:
+
+```bash
+# Is FastAPI still behaving as captured?
+uv run python infrastructure/scripts/api_baseline.py compare
+
+# Does the Node implementation match the captured contract?
+uv run python infrastructure/scripts/api_baseline.py compare --base-url http://127.0.0.1:3100 --group public
+
+# Do the two live servers agree right now, on today's data?
+uv run python infrastructure/scripts/api_baseline.py parity --group public
+```
+
+`parity` exists because the stored baseline was captured against an empty `articles`
+table: it cannot pin pagination, ordering or article serialisation. Parity compares two
+live servers, so temporary fixture data can exercise those paths. Phase 2 used seven
+temporary articles to verify pagination across four pages, hero-image serialisation,
+wrong-date 404s and wrong-category 404s, then removed them.
+
+## 6. Rollback
 
 The hybrid architecture is tagged. Returning to it is one command:
 

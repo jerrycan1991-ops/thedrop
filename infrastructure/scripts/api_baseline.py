@@ -88,6 +88,28 @@ ENDPOINTS += [
 ]
 
 
+def group_of(path: str) -> str:
+    """Which migration group an endpoint belongs to.
+
+    Derived from the path rather than stored, so adding an endpoint above cannot
+    forget to label it.
+    """
+    if path.startswith("/api/v1/public"):
+        return "public"
+    if path.startswith("/api/v1/admin"):
+        return "admin"
+    if path.startswith("/api/v1/worker"):
+        return "worker"
+    return "health"
+
+
+def selected_endpoints(groups: str | None) -> list[tuple[str, str, str]]:
+    if not groups:
+        return ENDPOINTS
+    wanted = {g.strip() for g in groups.split(",") if g.strip()}
+    return [e for e in ENDPOINTS if group_of(e[2]) in wanted]
+
+
 def normalise(value: Any) -> Any:
     """Replace volatile values so two runs of identical code compare equal."""
     if isinstance(value, dict):
@@ -118,27 +140,29 @@ def fetch(client: httpx.Client, method: str, path: str) -> dict[str, Any]:
     }
 
 
-def capture(base_url: str) -> int:
+def capture(base_url: str, groups: str | None = None) -> int:
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+    endpoints = selected_endpoints(groups)
     with httpx.Client(base_url=base_url, timeout=20.0, follow_redirects=False) as client:
-        for name, method, path in ENDPOINTS:
+        for name, method, path in endpoints:
             record = fetch(client, method, path)
             (BASELINE_DIR / f"{name}.json").write_text(
                 json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             print(f"  captured {name:38s} {record['status']}")
-    print(f"\n{len(ENDPOINTS)} endpoints captured to {BASELINE_DIR}")
+    print(f"\n{len(endpoints)} endpoints captured to {BASELINE_DIR}")
     return 0
 
 
-def compare(base_url: str) -> int:
+def compare(base_url: str, groups: str | None = None) -> int:
     if not BASELINE_DIR.exists():
         print("No baseline found. Run `capture` first.", file=sys.stderr)
         return 2
 
+    endpoints = selected_endpoints(groups)
     failures: list[str] = []
     with httpx.Client(base_url=base_url, timeout=20.0, follow_redirects=False) as client:
-        for name, method, path in ENDPOINTS:
+        for name, method, path in endpoints:
             path_file = BASELINE_DIR / f"{name}.json"
             if not path_file.exists():
                 print(f"  SKIP    {name:38s} (no baseline)")
@@ -164,18 +188,78 @@ def compare(base_url: str) -> int:
     if failures:
         print(f"\n{len(failures)} endpoint(s) differ: {', '.join(failures)}")
         return 1
-    print(f"\nAll {len(ENDPOINTS)} endpoints match the baseline.")
+    print(f"\nAll {len(endpoints)} endpoints match the baseline.")
+    return 0
+
+
+def parity(url_a: str, url_b: str, groups: str | None, extra: str | None) -> int:
+    """Diff two LIVE servers against each other.
+
+    The stored baseline can only pin behaviour for the data that existed when it was
+    captured -- with an empty `articles` table that means pagination, ordering and
+    article serialisation go unverified. This mode compares the Python and Node
+    implementations directly, so temporary fixture data can exercise the paths the
+    baseline cannot reach. Nothing in tests/baseline is read or written.
+    """
+    paths = [(name, m, p) for name, m, p in selected_endpoints(groups)]
+    if extra:
+        for i, raw in enumerate(extra.split(",")):
+            raw = raw.strip()
+            if raw:
+                paths.append((f"extra_{i}", "GET", raw))
+
+    failures: list[str] = []
+    with (
+        httpx.Client(base_url=url_a, timeout=30.0, follow_redirects=False) as a,
+        httpx.Client(base_url=url_b, timeout=30.0, follow_redirects=False) as b,
+    ):
+        for name, method, path in paths:
+            ra, rb = fetch(a, method, path), fetch(b, method, path)
+            diffs = [
+                f
+                for f in ("status", "content_type", "cache_control", "body")
+                if ra.get(f) != rb.get(f)
+            ]
+            if diffs:
+                failures.append(name)
+                print(f"  DIFF    {name:34s} {path}")
+                for f in diffs:
+                    print(f"            A ({f}): {json.dumps(ra.get(f))[:400]}")
+                    print(f"            B ({f}): {json.dumps(rb.get(f))[:400]}")
+            else:
+                print(f"  match   {name:34s} {ra['status']}  {path}")
+
+    if failures:
+        print(f"\n{len(failures)} path(s) differ between the two servers.")
+        return 1
+    print(f"\nAll {len(paths)} paths identical on both servers.")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["capture", "compare"])
+    parser.add_argument("mode", choices=["capture", "compare", "parity"])
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument(
+        "--group",
+        default=None,
+        help="Comma-separated: public, admin, worker, health. Default is all. Use this "
+        "to compare a migrated group against a host that serves only that group.",
+    )
+    parser.add_argument("--url-a", default=DEFAULT_BASE_URL, help="parity: first server")
+    parser.add_argument("--url-b", default="http://127.0.0.1:3100", help="parity: second server")
+    parser.add_argument("--extra-paths", default=None, help="parity: extra comma-separated paths")
     args = parser.parse_args()
 
-    print(f"{args.mode} against {args.base_url}\n")
-    return capture(args.base_url) if args.mode == "capture" else compare(args.base_url)
+    scope = args.group or "all groups"
+    if args.mode == "parity":
+        print(f"parity {args.url_a} vs {args.url_b} [{scope}]\n")
+        return parity(args.url_a, args.url_b, args.group, args.extra_paths)
+
+    print(f"{args.mode} against {args.base_url} [{scope}]\n")
+    if args.mode == "capture":
+        return capture(args.base_url, args.group)
+    return compare(args.base_url, args.group)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,20 @@
+import path from "node:path";
+
+import { config as loadEnv } from "dotenv";
 import type { NextConfig } from "next";
+
+/**
+ * Load the monorepo-root `.env`.
+ *
+ * Next.js only reads `.env` files from its own project root (`apps/web`), but this is
+ * a workspace where one `.env` serves the web app, the API, the worker and Alembic.
+ * Duplicating it into `apps/web` would mean two files of secrets drifting apart.
+ *
+ * `override: false` is the important part: values already present in the environment
+ * always win. On Vercel, Railway and systemd the platform injects them and this call
+ * changes nothing — it is purely a local-development convenience.
+ */
+loadEnv({ path: path.resolve(process.cwd(), "../../.env"), override: false });
 
 /**
  * The API base the web app talks to.

@@ -2,16 +2,31 @@ import "server-only";
 
 import { SITE } from "@thedrop/config";
 
+import { DatabaseUnavailableError } from "@/lib/db/client";
+import {
+  getArticleBySlug,
+  listArticles,
+  listCategories,
+  listLatest,
+} from "@/lib/db/queries/public";
+
 /**
- * Server-side client for the FastAPI service.
+ * Server-side data access for public pages.
  *
- * The web app never opens a database connection (ADR-0006). Everything it renders
- * comes through here, which is where caching and revalidation are controlled.
+ * PHASE 2: these functions used to `fetch()` the FastAPI service. They now call the
+ * query layer directly, which removes an HTTP hop from every uncached render — the
+ * whole point of the migration. On split hosting that hop crossed the public internet
+ * on every ISR revalidation, and TTFB feeds Core Web Vitals, which feeds Google News.
  *
- * Requests go direct to the internal URL rather than through the public origin —
- * one fewer hop, and it works during build when no public hostname is listening.
+ * The exported signatures are unchanged, so no page component needed editing.
+ *
+ * Caching now comes from the page's own `export const revalidate`, not from `fetch`
+ * cache tags. That is the layer that actually matters: a cached page does no work at
+ * all, rather than doing cached work.
+ *
+ * The public HTTP endpoints still exist as route handlers under `app/api/v1/public/`
+ * for external consumers; both paths share this same query layer, so they cannot drift.
  */
-const API_BASE = process.env.API_INTERNAL_URL ?? "http://127.0.0.1:8000";
 
 export class ApiError extends Error {
   constructor(
@@ -23,44 +38,22 @@ export class ApiError extends Error {
   }
 }
 
-interface FetchOptions {
-  /** ISR window in seconds. `false` disables caching (admin reads). */
-  revalidate?: number | false;
-  tags?: string[];
-  headers?: Record<string, string>;
-}
-
-async function apiFetch<T>(path: string, options: FetchOptions = {}): Promise<T> {
-  const { revalidate = 60, tags, headers } = options;
-
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json", ...headers },
-    next: revalidate === false ? { revalidate: 0 } : { revalidate, tags },
-  });
-
-  if (!response.ok) {
-    throw new ApiError(response.status, `GET ${path} failed with ${response.status}`);
-  }
-  return (await response.json()) as T;
-}
-
 /**
- * Read that tolerates the API being unavailable.
+ * The site must stay up when the database is not.
  *
- * The site must stay up when the backend is not. A category rail that cannot load is
- * an empty rail, not a 500 for the whole page — so callers get a fallback rather than
- * an exception. Genuine 404s are handled by the caller via `notFound()`.
+ * A category rail that cannot load is an empty rail, not a 500 for the whole page.
+ * Genuine "not found" is different and is signalled by ApiError(404), which the
+ * article page turns into `notFound()`.
  */
-export async function safeFetch<T>(
-  path: string,
-  fallback: T,
-  options: FetchOptions = {},
-): Promise<T> {
+async function safe<T>(label: string, fallback: T, fn: () => Promise<T>): Promise<T> {
   try {
-    return await apiFetch<T>(path, options);
+    return await fn();
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404) throw error;
-    console.error(`[api] ${path} unavailable`, error);
+    if (error instanceof DatabaseUnavailableError) {
+      console.error(`[data] ${label}: database unavailable`);
+    } else {
+      console.error(`[data] ${label} failed`, error);
+    }
     return fallback;
   }
 }
@@ -128,44 +121,60 @@ interface Paged<T> {
 }
 
 export function getCategories(): Promise<ApiCategory[]> {
-  return safeFetch<ApiCategory[]>("/api/v1/public/categories", [], { revalidate: 300 });
+  return safe("categories", [], async () => (await listCategories()) as unknown as ApiCategory[]);
 }
 
-export function getArticles(params: {
-  category?: string;
-  page?: number;
-  pageSize?: number;
-} = {}): Promise<Paged<ApiArticleSummary>> {
-  const query = new URLSearchParams();
-  if (params.category) query.set("category", params.category);
-  if (params.page) query.set("page", String(params.page));
-  if (params.pageSize) query.set("page_size", String(params.pageSize));
+export function getArticles(
+  params: { category?: string; page?: number; pageSize?: number } = {},
+): Promise<Paged<ApiArticleSummary>> {
+  const page = params.page ?? 1;
+  const pageSize = params.pageSize ?? 20;
 
-  const suffix = query.toString() ? `?${query}` : "";
-  return safeFetch(`/api/v1/public/articles${suffix}`, {
-    items: [],
-    total: 0,
-    page: params.page ?? 1,
-    pageSize: params.pageSize ?? 20,
-    hasMore: false,
-  });
+  return safe(
+    "articles",
+    { items: [], total: 0, page, pageSize, hasMore: false },
+    async () =>
+      (await listArticles({
+        category: params.category ?? null,
+        page,
+        pageSize,
+      })) as unknown as Paged<ApiArticleSummary>,
+  );
 }
 
 export function getLatest(limit = 20): Promise<{ items: ApiArticleSummary[] }> {
-  return safeFetch(`/api/v1/public/latest?limit=${limit}`, { items: [] }, { revalidate: 30 });
+  return safe("latest", { items: [] }, async () => ({
+    items: (await listLatest(limit)) as unknown as ApiArticleSummary[],
+  }));
 }
 
-export function getArticle(
+/**
+ * Throws ApiError(404) when the article does not exist or the date path does not
+ * match — the caller turns that into `notFound()`. Unlike the list endpoints this
+ * does NOT swallow failures: rendering an empty article page would be worse than an
+ * error.
+ */
+export async function getArticle(
   category: string,
   year: string,
   month: string,
   day: string,
   slug: string,
 ): Promise<ApiArticle> {
-  return apiFetch<ApiArticle>(
-    `/api/v1/public/articles/${category}/${year}/${month}/${day}/${slug}`,
-    { revalidate: 120, tags: [`article:${slug}`] },
-  );
+  const article = (await getArticleBySlug(category, slug)) as unknown as ApiArticle | null;
+
+  if (article === null) {
+    throw new ApiError(404, "Article not found");
+  }
+
+  // The date is part of the canonical URL; the same article served at two paths would
+  // split its ranking signals.
+  const expected = `/${category}/${year.padStart(4, "0")}/${month.padStart(2, "0")}/${day.padStart(2, "0")}/${slug}`;
+  if (article.path !== expected) {
+    throw new ApiError(404, "Article not found");
+  }
+
+  return article;
 }
 
 export const siteUrl = SITE.url;
