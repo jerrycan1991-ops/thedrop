@@ -165,6 +165,13 @@ Since Phase 2 the public endpoints exist in **both** implementations. Next.js ro
 handlers under `app/api/v1/public/` take precedence over the `afterFiles` rewrite in
 `next.config.ts`; everything else still falls through to FastAPI. Nothing was deleted.
 
+> **The two implementations can drift, and the tests are what stop it.** They currently
+> share a query layer, but that is a convention, not a guarantee — nothing prevents
+> someone editing the Python route, the SQL, or the serialiser on one side only.
+> `compare` and `parity` are the compatibility authority and are **permanent regression
+> protection**, not scaffolding to be removed once a migration lands. Run them in CI and
+> before every release for as long as both implementations exist.
+
 Three commands, three different questions:
 
 ```bash
