@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 from thedrop_config import get_settings
@@ -59,6 +61,32 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None if settings.is_production else "/openapi.json",
     )
+
+    # --- host validation ----------------------------------------------------
+    # Rejects requests whose Host header is not ours, which blocks Host-header
+    # poisoning and stops the service answering on a hosting provider's default
+    # *.up.railway.app URL once a custom domain is in place.
+    if settings.trusted_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+
+    # --- CORS ---------------------------------------------------------------
+    # Only needed when the browser talks to this API on a different origin than
+    # the page it loaded from. Same-origin deployments leave CORS_ALLOWED_ORIGINS
+    # empty and no CORS headers are emitted at all -- which is the safer default.
+    #
+    # allow_credentials=True is required for the session cookie to travel, and it
+    # is precisely why the origin list must be explicit. Settings validation
+    # rejects a wildcard rather than letting it fail opaquely in the browser.
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allowed_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token"],
+            expose_headers=["X-Request-ID"],
+            max_age=600,
+        )
 
     @app.middleware("http")
     async def request_context(

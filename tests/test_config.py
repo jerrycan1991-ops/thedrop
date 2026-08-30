@@ -85,6 +85,44 @@ class TestAffiliateSettings:
         assert settings.min_extracted_facts >= 5
 
 
+class TestCrossOriginSettings:
+    def test_defaults_emit_no_cors_and_no_cookie_domain(self) -> None:
+        # A single-origin deployment must not opt into CORS by accident.
+        settings = Settings(ENVIRONMENT=Environment.DEVELOPMENT)
+        assert settings.cors_allowed_origins == []
+        assert settings.trusted_hosts == []
+        assert settings.cookie_domain == ""
+
+    def test_origins_parse_from_a_comma_separated_list(self) -> None:
+        settings = Settings(
+            CORS_ALLOWED_ORIGINS="https://thedrop.channel, https://www.thedrop.channel"
+        )
+        assert settings.cors_allowed_origins == [
+            "https://thedrop.channel",
+            "https://www.thedrop.channel",
+        ]
+
+    def test_blank_entries_are_ignored(self) -> None:
+        # Trailing commas are the most common hand-editing mistake in a hosting
+        # dashboard; an empty origin string would never match and is silently useless.
+        settings = Settings(CORS_ALLOWED_ORIGINS="https://thedrop.channel,,  ,")
+        assert settings.cors_allowed_origins == ["https://thedrop.channel"]
+
+    def test_wildcard_origin_is_rejected(self) -> None:
+        # Browsers refuse a wildcard origin on credentialed requests. Failing at
+        # startup beats a live site where admin login silently does nothing.
+        with pytest.raises(ValidationError):
+            Settings(CORS_ALLOWED_ORIGINS="*")
+
+    def test_wildcard_subdomain_is_also_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(CORS_ALLOWED_ORIGINS="https://*.thedrop.channel")
+
+    def test_trusted_hosts_parse(self) -> None:
+        settings = Settings(TRUSTED_HOSTS="api.thedrop.channel, thedrop.channel")
+        assert settings.trusted_hosts == ["api.thedrop.channel", "thedrop.channel"]
+
+
 class TestProductionSafety:
     def test_placeholder_session_secret_rejected_in_production(self) -> None:
         with pytest.raises(ValidationError):

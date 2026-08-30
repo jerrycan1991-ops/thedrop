@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+
+  "//": "Set Root Directory to apps/web in the Vercel project, and enable 'Include source files outside of the Root Directory'. This is a pnpm workspace: the web app depends on @thedrop/config and @thedrop/shared, which live outside apps/web, so a build scoped to apps/web alone cannot resolve them.",
+
+  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "buildCommand": "cd ../.. && pnpm --filter @thedrop/web build",
+
+  "//regions": "iad1 is US East. Keep the functions in the same region as the Railway database -- a cross-region round trip on every uncached render is the single easiest way to make this site feel slow.",
+  "regions": ["iad1"],
+
+  "github": {
+    "silent": true
+  }
+}

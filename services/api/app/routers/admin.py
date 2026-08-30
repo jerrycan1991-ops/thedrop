@@ -141,6 +141,13 @@ def login(
         samesite="lax",
         max_age=settings.session_absolute_ttl_hours * 3600,
         path="/",
+        # Set to ".thedrop.channel" when the API lives on a subdomain, so the cookie
+        # is shared across the apex and api hosts. They share a registrable domain,
+        # so requests between them are still same-site and SameSite=Lax holds --
+        # SameSite=None is NOT needed and would weaken CSRF protection for nothing.
+        # Empty (the default) scopes the cookie to the exact host, which is correct
+        # for a single-origin deployment.
+        domain=settings.cookie_domain or None,
     )
     return {
         "user": {
@@ -163,7 +170,13 @@ def logout(
     session_id = request.cookies.get(settings.session_cookie_name)
     if session_id:
         destroy_session(r, session_id)
-    response.delete_cookie(settings.session_cookie_name, path="/")
+    # Domain and path must match what set_cookie used, or the browser keeps the
+    # old cookie and "logout" leaves a live session behind in the browser.
+    response.delete_cookie(
+        settings.session_cookie_name,
+        path="/",
+        domain=settings.cookie_domain or None,
+    )
     return {"status": "ok"}
 
 

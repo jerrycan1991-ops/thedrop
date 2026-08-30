@@ -1,0 +1,35 @@
+# Keep the build context small and, more importantly, keep secrets out of it.
+# Anything here is invisible to COPY, so a stray .env cannot be baked into a layer.
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+.git
+.github
+.venv
+node_modules
+.pnpm-store
+
+apps/web/.next
+apps/web/out
+apps/web/node_modules
+
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+htmlcov
+.coverage
+
+var/media
+docs
+tests
+infrastructure/systemd
+playwright-report
+test-results
+*.log

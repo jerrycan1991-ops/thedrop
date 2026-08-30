@@ -186,6 +186,44 @@ class Settings(BaseSettings):
     web_port: int = Field(default=3100, alias="WEB_PORT")
     api_port: int = Field(default=8000, alias="API_PORT")
 
+    # --- cross-origin deployment -------------------------------------------
+    # On a single VPS the web app and API share an origin and none of this is used.
+    # When the frontend is hosted separately (Vercel) and the API elsewhere
+    # (Railway), the browser treats them as different origins and all three of
+    # these must be set correctly or admin login silently fails.
+    #
+    # Comma-separated rather than JSON: these are edited by hand in a hosting
+    # dashboard, where a malformed JSON array is an easy and confusing mistake.
+    cors_allowed_origins_raw: str = Field(default="", alias="CORS_ALLOWED_ORIGINS")
+    trusted_hosts_raw: str = Field(default="", alias="TRUSTED_HOSTS")
+
+    # e.g. ".thedrop.channel" so a cookie set by api.thedrop.channel is sent to
+    # thedrop.channel. Both share a registrable domain, so they are "same-site"
+    # and SameSite=Lax still applies -- no need for the far weaker SameSite=None.
+    cookie_domain: str = Field(default="", alias="COOKIE_DOMAIN")
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_allowed_origins_raw.split(",") if o.strip()]
+
+    @property
+    def trusted_hosts(self) -> list[str]:
+        return [h.strip() for h in self.trusted_hosts_raw.split(",") if h.strip()]
+
+    @field_validator("cors_allowed_origins_raw")
+    @classmethod
+    def _no_wildcard_origin(cls, v: str) -> str:
+        # A wildcard origin cannot be combined with credentialed requests: browsers
+        # reject the response outright. Failing here beats debugging a silent
+        # "login does nothing" in production.
+        if "*" in v:
+            msg = (
+                "CORS_ALLOWED_ORIGINS must list explicit origins. "
+                "A wildcard is incompatible with credentialed requests."
+            )
+            raise ValueError(msg)
+        return v
+
     media_storage_backend: Literal["local", "s3"] = Field(
         default="local", alias="MEDIA_STORAGE_BACKEND"
     )
