@@ -1,0 +1,14 @@
+{
+  "body": {
+    "environment": "development",
+    "status": "ok",
+    "version": "0.1.0"
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/healthz"
+  },
+  "status": 200
+}

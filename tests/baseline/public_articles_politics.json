@@ -1,0 +1,16 @@
+{
+  "body": {
+    "hasMore": false,
+    "items": [],
+    "page": 1,
+    "pageSize": 4,
+    "total": 0
+  },
+  "cache_control": "public, max-age=60, stale-while-revalidate=300",
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/articles?category=politics&page_size=4"
+  },
+  "status": 200
+}

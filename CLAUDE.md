@@ -88,6 +88,30 @@ The public VPS has 4 cores and 8 GB of RAM, shared with an existing hosting pane
 
 ---
 
+## Migration to a Node-first backend (in progress)
+
+Approved architecture: **Next.js/Node.js is the primary application backend. Python is
+the AI, GPU, NLP, embeddings and media-generation worker layer.** Migration is gradual
+and phase-gated — never a big-bang rewrite. See `docs/API_BASELINE.md`.
+
+- **Alembic is the ONLY schema migration authority.** If Drizzle is introduced, it is for
+  TypeScript access and type generation only: `drizzle-kit pull` to introspect the live
+  schema, never `generate` or `push`, and no `drizzle/migrations` directory. Two
+  migration authorities over one database produce divergent histories that surface as a
+  failed deploy against a database neither tool understands.
+- **Do not delete FastAPI** until every migrated endpoint is tested, frontend behaviour is
+  verified, auth works, admin works, the worker protocol is preserved, database integrity
+  is confirmed, and all tests pass.
+- **Migrate, then verify, then deprecate.** Add the Node implementation alongside the
+  Python one, prove equivalence with `infrastructure/scripts/api_baseline.py compare`,
+  and only then retire the Python route.
+- **The public website must never depend on the desktop worker being online.** If the
+  desktop is offline: the site serves normally, jobs stay queued, leases expire and are
+  reaped, and nothing crashes.
+- **Node gains database credentials it does not have today.** The database module is
+  `server-only`; no secret ever enters a `NEXT_PUBLIC_*` variable; least-privilege roles
+  where practical; every phase verifies no credential reached the client bundle.
+
 ## The self-improvement boundary
 
 The experiment framework may never propose or apply a change that weakens verification, security, copyright safeguards, audit logs, high-risk story rules, source requirements, authentication or rate limiting. These are in `PROTECTED_SETTINGS` and enforced at experiment creation.

@@ -1,0 +1,177 @@
+# API baseline — the hybrid architecture contract
+
+Frozen at tag `v0.1.0-hybrid` (commit `3a0dae8`), captured 31 August 2026.
+
+This is the reference every migrated endpoint must match. When a Next.js implementation
+replaces a FastAPI one, "it behaves the same" stops being a judgement call:
+
+```bash
+uv run python infrastructure/scripts/api_baseline.py compare --base-url http://127.0.0.1:3100
+```
+
+Machine-readable captures live in `tests/baseline/`. Volatile fields (timestamps,
+request ids) are normalised to `<volatile>`; **status code, content type,
+`Cache-Control`, key names, types and null-vs-absent are compared exactly** — those are
+the details a reimplementation gets subtly wrong.
+
+---
+
+## 1. Endpoint inventory — 18 routes
+
+### Health (2) — no auth
+
+| Method | Path | Status | Notes |
+|---|---|---|---|
+| GET | `/healthz` | 200 | Liveness only. Never touches the database. |
+| GET | `/readyz` | 200 / 503 | 503 when Postgres or Redis is unreachable, or migrations are behind. Body always includes `database`, `redis`, `migrations`. |
+
+### Public (4) — no auth, cacheable
+
+All send `Cache-Control: public, max-age=60, stale-while-revalidate=300`. **Reproduce
+this header exactly** — ISR and any CDN in front of the site depend on it.
+
+| Method | Path | Behaviour |
+|---|---|---|
+| GET | `/api/v1/public/categories` | Active categories, ordered by `sort_order`. Fields: `slug`, `name`, `description`, `accentToken`, `isCommercial`. |
+| GET | `/api/v1/public/articles` | Published only, newest first. Query: `category`, `page` (≥1, ≤500), `page_size` (≥1, ≤50). Returns `{items, page, pageSize, hasMore, total}`. |
+| GET | `/api/v1/public/articles/{category}/{yyyy}/{mm}/{dd}/{slug}` | Single article with `body`, `keyFacts`, `sources`, `corrections`, `tags`, `seo`, `structuredData`, `disclosure`. |
+| GET | `/api/v1/public/latest` | Newest N. Query: `limit` (≥1, ≤50, default 20). |
+
+**Behaviours that are easy to get wrong and are asserted by the baseline:**
+
+- An unknown category returns **200 with an empty list**, not 404. The category filter is
+  a filter, not a lookup.
+- A date path that does not match the article's `first_published_at` returns **404**, not
+  the article. The date is part of the canonical URL; serving the same content at two
+  paths creates duplicates.
+- `page=0` and `page_size=9999` return **422**, not a clamped result. Out-of-range is an
+  error, not something to silently correct.
+- Unpublished and soft-deleted articles are invisible to every public route.
+- `total` is `offset + len(items) + (1 if hasMore else 0)` — deliberately an estimate, to
+  avoid a second `COUNT(*)` on every page load. A rewrite returning a true count would
+  differ, and the baseline will catch it.
+
+### Admin (7) — session cookie + RBAC
+
+All return **401** when unauthenticated (asserted in the baseline for four of them).
+
+| Method | Path | Role | Notes |
+|---|---|---|---|
+| POST | `/api/v1/admin/auth/login` | — | argon2id verify, Redis session, sets `thedrop_session`. Rate limited 5 / 15 min per IP+email. Locks the account for 15 min after 5 failures. Wrong password and unknown account return an **identical** 401 body. |
+| POST | `/api/v1/admin/auth/logout` | any | Destroys the Redis session, clears the cookie with matching `domain` and `path`. |
+| GET | `/api/v1/admin/auth/me` | any | Current user and roles. |
+| GET | `/api/v1/admin/articles` | editor / analyst / viewer | Paginated, includes drafts. |
+| GET | `/api/v1/admin/system/metrics` | analyst / viewer | Article counts, job queue depth, worker heartbeat age, Redis reachability. |
+| GET | `/api/v1/admin/settings` | editor | All settings incl. `isProtected`. |
+| PUT | `/api/v1/admin/settings/{key}` | **admin** | Writes an `audit_logs` row with before/after. |
+
+`admin` implicitly satisfies every role requirement.
+
+**Session semantics to preserve exactly:** httpOnly; `secure` in production; `SameSite=Lax`;
+absolute expiry 12 h **and** idle expiry 2 h (the idle window slides on each request);
+`session_epoch` mismatch invalidates every session for that user at once.
+
+### Worker (5) — bearer token
+
+The desktop's only interface. Token compared against a stored SHA-256 digest in constant
+time; a previous token stays valid during a rotation grace window.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/v1/worker/heartbeat` | Updates liveness **and extends every lease held by that node** in the same round trip. |
+| POST | `/api/v1/worker/jobs/claim` | `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)`. Only leases job types the runner advertises. |
+| POST | `/api/v1/worker/jobs/{id}/complete` | **Idempotent** — completing an already-done job returns `{"status": "already_complete"}`, not an error. |
+| POST | `/api/v1/worker/jobs/{id}/fail` | Retryable → requeued with exponential backoff `min(60 · 2^(attempts-1), 3600)`. Exhausted → `FAILED`. |
+| GET | `/api/v1/worker/status` | Runner self-check. |
+
+A job leased to a different node returns **409**, not 403 — it almost always means the
+lease expired and was reaped, which is recoverable, not a permissions problem.
+
+---
+
+## 2. Cross-cutting behaviour
+
+- Every response carries `X-Request-ID` (echoed from the request, or generated).
+- Security headers on every response: `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy`; HSTS in production.
+- Unhandled `OperationalError` → **503** with `Retry-After: 30`, never 500. The driver
+  message is logged, never returned — it contains the connection string.
+- Validation failures → **422** with `{detail, errors[], requestId}`. Field names are
+  returned; submitted values are not.
+- CORS headers are emitted **only** when `CORS_ALLOWED_ORIGINS` is set. Empty means no
+  CORS headers at all.
+
+---
+
+## 3. Database state at baseline
+
+| | |
+|---|---|
+| Alembic revision | `bf45495a0cae` (head) |
+| Tables | 32 (31 + `alembic_version`) |
+| Foreign keys | 35 |
+| Check constraints | 7 |
+| Indexes | 119 |
+| Extensions | `vector`, `pg_trgm`, `plpgsql` |
+| Seeded rows | 8 categories, 4 roles, 10 settings, 1 user, 6 ad placements, 4 CTA templates, 1 disclosure |
+| Articles | 0 — nothing published yet |
+
+Full snapshot: `tests/baseline/_database.json`.
+
+---
+
+## 4. Migration governance
+
+### Alembic is the only schema authority
+
+**Alembic owns every schema change. Nothing else may generate a migration.**
+
+If Drizzle is introduced it is for TypeScript access and type generation only:
+
+- Use `drizzle-kit pull` (introspection) to derive types **from** the live schema.
+- Never run `drizzle-kit generate` or `drizzle-kit push`.
+- Add no `drizzle/migrations` directory. If one appears, it is a bug.
+- A schema change means: write an Alembic migration → apply it → re-introspect.
+
+Two migration authorities over one database produce divergent histories that are only
+discovered when a deploy fails against a database neither tool fully understands.
+
+### Security requirements for Node database access
+
+The migration gives the Next.js server database credentials it does not have today.
+This is the one real regression identified in the audit, so the safeguards are
+mandatory, not aspirational:
+
+- The database module is `server-only` — importing it from a client component must be a
+  **build error**, not a code-review catch.
+- No connection string, password or secret in any `NEXT_PUBLIC_*` variable, ever.
+- Least-privilege database roles where practical: the web tier does not need `DROP`.
+- Secrets only via environment variables; production secrets never in git.
+- Every phase verifies no credential reaches the client bundle:
+  `grep -r "postgres://\|postgresql://" apps/web/.next/static/` must return nothing.
+
+---
+
+## 5. Rollback
+
+The hybrid architecture is tagged. Returning to it is one command:
+
+```bash
+git checkout v0.1.0-hybrid
+```
+
+To reset `main` to it after a failed migration phase:
+
+```bash
+git reset --hard v0.1.0-hybrid
+```
+
+The database is **not** rolled back by either command, and does not need to be: the
+migration phases add no schema changes. If a phase ever does add one, it gets its own
+Alembic revision and its own documented downgrade path.
+
+Verify a rollback succeeded:
+
+```bash
+uv run pytest -q && uv run python infrastructure/scripts/api_baseline.py compare
+```

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "generatedAt": "<volatile>",
+    "items": []
+  },
+  "cache_control": "public, max-age=60, stale-while-revalidate=300",
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/latest?limit=24"
+  },
+  "status": 200
+}

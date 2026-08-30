@@ -1,0 +1,17 @@
+{
+  "body": {
+    "database": true,
+    "environment": "development",
+    "migrations": "head",
+    "redis": true,
+    "status": "ok",
+    "version": "0.1.0"
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/readyz"
+  },
+  "status": 200
+}

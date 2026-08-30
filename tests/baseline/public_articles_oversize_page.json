@@ -1,0 +1,19 @@
+{
+  "body": {
+    "detail": "Validation failed",
+    "errors": [
+      {
+        "field": "query.page_size",
+        "message": "Input should be less than or equal to 50"
+      }
+    ],
+    "requestId": "<volatile>"
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/articles?page_size=9999"
+  },
+  "status": 422
+}

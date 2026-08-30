@@ -1,0 +1,12 @@
+{
+  "body": {
+    "detail": "Article not found"
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/articles/trending/2026/01/01/does-not-exist"
+  },
+  "status": 404
+}

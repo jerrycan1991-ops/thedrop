@@ -1,0 +1,67 @@
+{
+  "body": [
+    {
+      "accentToken": "--cat-trending",
+      "description": "What the country is paying attention to right now.",
+      "isCommercial": false,
+      "name": "Trending",
+      "slug": "trending"
+    },
+    {
+      "accentToken": "--cat-politics",
+      "description": "US politics, policy and power.",
+      "isCommercial": false,
+      "name": "Politics",
+      "slug": "politics"
+    },
+    {
+      "accentToken": "--cat-entertainment",
+      "description": "Film, television, music and celebrity.",
+      "isCommercial": false,
+      "name": "Entertainment",
+      "slug": "entertainment"
+    },
+    {
+      "accentToken": "--cat-sports",
+      "description": "Leagues, games and the stories around them.",
+      "isCommercial": false,
+      "name": "Sports",
+      "slug": "sports"
+    },
+    {
+      "accentToken": "--cat-business",
+      "description": "Markets, companies and the economy.",
+      "isCommercial": false,
+      "name": "Business",
+      "slug": "business"
+    },
+    {
+      "accentToken": "--cat-technology",
+      "description": "Products, platforms and the people building them.",
+      "isCommercial": false,
+      "name": "Technology",
+      "slug": "technology"
+    },
+    {
+      "accentToken": "--cat-world",
+      "description": "International news that matters to a US audience.",
+      "isCommercial": false,
+      "name": "World",
+      "slug": "world"
+    },
+    {
+      "accentToken": "--cat-picks",
+      "description": "Product guides and recommendations. Contains affiliate links.",
+      "isCommercial": true,
+      "name": "Picks",
+      "slug": "picks"
+    }
+  ],
+  "cache_control": "public, max-age=60, stale-while-revalidate=300",
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/categories"
+  },
+  "status": 200
+}

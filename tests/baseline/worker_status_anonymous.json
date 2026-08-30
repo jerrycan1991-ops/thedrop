@@ -1,0 +1,12 @@
+{
+  "body": {
+    "detail": "Missing worker token"
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/worker/status"
+  },
+  "status": 401
+}

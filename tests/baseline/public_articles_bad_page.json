@@ -1,0 +1,19 @@
+{
+  "body": {
+    "detail": "Validation failed",
+    "errors": [
+      {
+        "field": "query.page",
+        "message": "Input should be greater than or equal to 1"
+      }
+    ],
+    "requestId": "<volatile>"
+  },
+  "cache_control": null,
+  "content_type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/articles?page=0"
+  },
+  "status": 422
+}
