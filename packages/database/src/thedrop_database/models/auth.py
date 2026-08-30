@@ -75,7 +75,27 @@ class User(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
         String(16), default=SubscriptionTier.FREE, nullable=False
     )
 
-    roles: Mapped[list[Role]] = relationship(secondary=user_roles, back_populates="users")
+    #: CANONICAL ROLE ORDERING: alphabetical by slug, resolved by the database.
+    #:
+    #: Without `order_by` this relationship returned rows in whatever order Postgres
+    #: chose, which was never part of the contract only because no user had ever held
+    #: more than one role. Defining it now, before a second assignment exists, is
+    #: cheaper than discovering the non-determinism later.
+    #:
+    #: Why slug and not id: `roles.id` is seed insertion order. It currently reads
+    #: admin, editor, analyst, viewer — privilege-descending by pure coincidence — and
+    #: a role added next year would sort last regardless of what it means.
+    #:
+    #: Why not a priority column: it would need a migration, and it would imply a
+    #: ranking the authorization code does not use. `require_role` is set membership
+    #: with `admin` as an implicit superset; the array order carries no meaning, so the
+    #: ordering should be neutral and stable rather than pretend to encode privilege.
+    #:
+    #: Both tiers sort in the DATABASE (here, and `ORDER BY r.slug` in the Node query),
+    #: so they share one collation and cannot disagree.
+    roles: Mapped[list[Role]] = relationship(
+        secondary=user_roles, back_populates="users", order_by="Role.slug"
+    )
 
     def has_role(self, slug: str) -> bool:
         return any(r.slug == slug for r in self.roles)

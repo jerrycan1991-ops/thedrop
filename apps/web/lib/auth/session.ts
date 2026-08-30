@@ -125,14 +125,17 @@ export async function validateSession(sessionId: string | undefined): Promise<Se
   // Roles are re-read from the database, NOT taken from the session payload, so a
   // revoked role takes effect on the next request rather than at next login.
   //
-  // Ordered by id for determinism. The Python relationship has no ORDER BY, so with
-  // multiple roles the two implementations could order differently; only one role
-  // exists today. Worth adding `order_by` on the Python side before that changes.
+  // CANONICAL ROLE ORDERING: alphabetical by slug — see the `User.roles` relationship
+  // in packages/database/.../models/auth.py for why slug rather than id.
+  //
+  // Both tiers sort in the database, so they share one collation and cannot disagree.
+  // Sorting in application code would risk Python's codepoint order diverging from
+  // Postgres's collation for any slug outside plain lowercase ASCII.
   const roleRows = await query<{ slug: string }>(
     `SELECT r.slug FROM roles r
        JOIN user_roles ur ON ur.role_id = r.id
       WHERE ur.user_id = $1
-      ORDER BY r.id`,
+      ORDER BY r.slug`,
     [payload.user_id],
   );
 
