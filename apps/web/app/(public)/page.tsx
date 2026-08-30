@@ -1,10 +1,12 @@
 import Link from "next/link";
 
-import { CATEGORIES } from "@thedrop/config";
-
 import { AdSlot } from "@/components/ads/AdSlot";
 import { ArticleCard } from "@/components/article/ArticleCard";
 import { getArticles, getLatest, type ApiArticleSummary } from "@/lib/api-client";
+import { getNavCategories } from "@/lib/categories";
+
+/** How many category modules the homepage renders below the fold. */
+const HOMEPAGE_CATEGORY_MODULES = 4;
 
 // The homepage is the most-hit path and changes constantly. A 60s ISR window means
 // almost every visitor is served static HTML with no Python and no database involved.
@@ -37,9 +39,13 @@ function EmptyState() {
 }
 
 export default async function HomePage() {
+  // Categories are resolved first because the feed requests depend on them; the feeds
+  // themselves still run in parallel.
+  const moduleCategories = (await getNavCategories()).slice(0, HOMEPAGE_CATEGORY_MODULES);
+
   const [latest, ...categoryFeeds] = await Promise.all([
     getLatest(24),
-    ...CATEGORIES.slice(0, 4).map((category) =>
+    ...moduleCategories.map((category) =>
       getArticles({ category: category.slug, pageSize: 4 }),
     ),
   ]);
@@ -110,7 +116,7 @@ export default async function HomePage() {
           <AdSlot placement="home_module" className="my-12" />
 
           {/* Category modules */}
-          {CATEGORIES.slice(0, 4).map((category, index) => {
+          {moduleCategories.map((category, index) => {
             const feed = categoryFeeds[index];
             if (!feed || feed.items.length === 0) return null;
             return (

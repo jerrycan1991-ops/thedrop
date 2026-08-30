@@ -3,7 +3,19 @@
  *
  * Anything in here ships to the browser. Secrets, thresholds and gates live in the
  * Python settings module and the database — never here.
+ *
+ * Two deliberately different source-of-truth strategies (see docs/DOMAIN_MODEL.md):
+ *
+ *   Categories    — runtime data. The `categories` TABLE is authoritative. There is
+ *                   no category list in this file; the web app reads them from the
+ *                   server layer via `apps/web/lib/categories.ts`.
+ *
+ *   Article types — a closed set that business logic switches on. Canonical
+ *                   definition is `article_types.json`, imported below and read by
+ *                   Python from the same file. Neither language re-declares it.
  */
+
+import articleTypeDefinition from "./thedrop_config/article_types.json";
 
 export const SITE = {
   name: "The Drop",
@@ -17,31 +29,51 @@ export const SITE = {
   twitterHandle: "@thedrop",
 } as const;
 
+/* -------------------------------------------------------------------------- */
+/* Article types — derived from the canonical JSON, never hand-listed          */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Categories are seeded in the database and are the source of truth at runtime.
- * This list exists so navigation and routing can be statically typed and so the
- * site renders sensibly before the database is reachable.
- *
- * Adding a category in production is a database row, not a code change.
+ * Editorial article types. The label is always rendered: distinguishing news from
+ * analysis from opinion is an editorial obligation, not a display preference.
  */
-export const CATEGORIES = [
-  { slug: "trending", name: "Trending", accentToken: "--cat-trending", order: 1 },
-  { slug: "politics", name: "Politics", accentToken: "--cat-politics", order: 2 },
-  { slug: "entertainment", name: "Entertainment", accentToken: "--cat-entertainment", order: 3 },
-  { slug: "sports", name: "Sports", accentToken: "--cat-sports", order: 4 },
-  { slug: "business", name: "Business", accentToken: "--cat-business", order: 5 },
-  { slug: "technology", name: "Technology", accentToken: "--cat-technology", order: 6 },
-  { slug: "world", name: "World", accentToken: "--cat-world", order: 7 },
-] as const;
+export const ARTICLE_TYPES = articleTypeDefinition.editorial;
 
-export type CategorySlug = (typeof CATEGORIES)[number]["slug"];
+export type ArticleType = keyof typeof ARTICLE_TYPES;
 
-export const CATEGORY_SLUGS: readonly string[] = CATEGORIES.map((c) => c.slug);
+/** Commercial formats. Live under /picks, excluded from the Google News sitemap. */
+export const COMMERCIAL_ARTICLE_TYPES = articleTypeDefinition.commercial;
 
-export const PRIMARY_NAV = [
-  ...CATEGORIES.map((c) => ({ href: `/${c.slug}`, label: c.name })),
-  { href: "/latest", label: "Latest" },
-] as const;
+export type CommercialArticleType = keyof typeof COMMERCIAL_ARTICLE_TYPES;
+
+/**
+ * The editorial types that may never carry an affiliate link, CTA or product
+ * placement. Derived from the same `forbidsCommercial` flag that generates the
+ * database CHECK constraint, so the UI and the schema cannot disagree.
+ */
+export const EDITORIAL_ARTICLE_TYPES: readonly ArticleType[] = (
+  Object.entries(ARTICLE_TYPES) as [ArticleType, { forbidsCommercial: boolean }][]
+)
+  .filter(([, spec]) => spec.forbidsCommercial)
+  .map(([name]) => name);
+
+export function isEditorialArticleType(value: string): boolean {
+  return (EDITORIAL_ARTICLE_TYPES as readonly string[]).includes(value);
+}
+
+export function isKnownArticleType(value: string): boolean {
+  return value in ARTICLE_TYPES || value in COMMERCIAL_ARTICLE_TYPES;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Navigation                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Links that are NOT categories. Category links are appended at runtime from the
+ * database — see `getPrimaryNav()` in apps/web/lib/categories.ts.
+ */
+export const STATIC_PRIMARY_NAV = [{ href: "/latest", label: "Latest" }] as const;
 
 export const FOOTER_NAV = [
   { href: "/about", label: "About" },
@@ -53,46 +85,9 @@ export const FOOTER_NAV = [
   { href: "/terms", label: "Terms" },
 ] as const;
 
-/**
- * Article types. The label is always rendered — the discipline of distinguishing
- * news from opinion is built into the template, not bolted on later.
- */
-export const ARTICLE_TYPES = {
-  NEWS: { label: "News", tone: "neutral" },
-  ANALYSIS: { label: "Analysis", tone: "info" },
-  OPINION: { label: "Opinion", tone: "accent" },
-  COMMENTARY: { label: "Commentary", tone: "accent" },
-  BREAKING: { label: "Breaking", tone: "breaking" },
-  EXPLAINER: { label: "Explainer", tone: "info" },
-  LIVE: { label: "Live", tone: "breaking" },
-} as const;
-
-export type ArticleType = keyof typeof ARTICLE_TYPES;
-
-/** Editorial article types may never carry an affiliate link. Enforced in the DB too. */
-export const EDITORIAL_ARTICLE_TYPES: readonly ArticleType[] = [
-  "NEWS",
-  "ANALYSIS",
-  "OPINION",
-  "COMMENTARY",
-];
-
-/** Commercial types live under /picks and are excluded from the Google News sitemap. */
-export const COMMERCIAL_ARTICLE_TYPES = {
-  PRODUCT_REVIEW: { label: "Product Review" },
-  BUYING_GUIDE: { label: "Buying Guide" },
-  BEST_PRODUCTS_LIST: { label: "Best Products" },
-  PRODUCT_COMPARISON: { label: "Comparison" },
-  PRODUCT_ROUNDUP: { label: "Roundup" },
-  GIFT_GUIDE: { label: "Gift Guide" },
-  BEST_FOR_GUIDE: { label: "Best For" },
-  TRENDING_PRODUCT: { label: "Trending" },
-  NEWS_PLUS_RECOMMENDATION: { label: "News + Picks" },
-  HOW_TO: { label: "How-To" },
-  DEALS: { label: "Deals" },
-} as const;
-
-export type CommercialArticleType = keyof typeof COMMERCIAL_ARTICLE_TYPES;
+/* -------------------------------------------------------------------------- */
+/* Placements                                                                  */
+/* -------------------------------------------------------------------------- */
 
 export const AD_PLACEMENTS = [
   "header",

@@ -1,11 +1,16 @@
 import Link from "next/link";
 
-import { PRIMARY_NAV } from "@thedrop/config";
-
 import { DropLockup } from "@/components/brand/DropMark";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { getPrimaryNav } from "@/lib/categories";
 
-export function SiteHeader() {
+/**
+ * Server component: navigation is built from the categories table, so adding a
+ * section is a database row rather than a code change.
+ */
+export async function SiteHeader() {
+  const primaryNav = await getPrimaryNav();
+
   return (
     <header className="sticky top-0 z-50 border-b border-line bg-bg/85 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-[--page-width] items-center gap-6 px-4 sm:px-6">
@@ -19,7 +24,7 @@ export function SiteHeader() {
           aria-label="Sections"
           className="scroll-x -mx-2 hidden flex-1 items-center gap-1 px-2 md:flex"
         >
-          {PRIMARY_NAV.map((item) => (
+          {primaryNav.map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -50,7 +55,7 @@ export function SiteHeader() {
         aria-label="Sections"
         className="scroll-x flex gap-1 border-t border-line px-4 py-2 md:hidden"
       >
-        {PRIMARY_NAV.map((item) => (
+        {primaryNav.map((item) => (
           <Link
             key={item.href}
             href={item.href}

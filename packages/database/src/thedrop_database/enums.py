@@ -9,39 +9,19 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-
-class ArticleType(StrEnum):
-    """Editorial types. These may NEVER carry an affiliate link (see CommercialType)."""
-
-    NEWS = "NEWS"
-    ANALYSIS = "ANALYSIS"
-    OPINION = "OPINION"
-    COMMENTARY = "COMMENTARY"
-    BREAKING = "BREAKING"
-    EXPLAINER = "EXPLAINER"
-    LIVE = "LIVE"
-
-
-#: The four types where commercial content is structurally forbidden.
-EDITORIAL_ARTICLE_TYPES: frozenset[str] = frozenset(
-    {ArticleType.NEWS, ArticleType.ANALYSIS, ArticleType.OPINION, ArticleType.COMMENTARY}
-)
-
-
-class CommercialType(StrEnum):
-    """Affiliate article formats. Live under /picks, excluded from the news sitemap."""
-
-    PRODUCT_REVIEW = "PRODUCT_REVIEW"
-    BUYING_GUIDE = "BUYING_GUIDE"
-    BEST_PRODUCTS_LIST = "BEST_PRODUCTS_LIST"
-    PRODUCT_COMPARISON = "PRODUCT_COMPARISON"
-    PRODUCT_ROUNDUP = "PRODUCT_ROUNDUP"
-    GIFT_GUIDE = "GIFT_GUIDE"
-    BEST_FOR_GUIDE = "BEST_FOR_GUIDE"
-    TRENDING_PRODUCT = "TRENDING_PRODUCT"
-    NEWS_PLUS_RECOMMENDATION = "NEWS_PLUS_RECOMMENDATION"
-    HOW_TO = "HOW_TO"
-    DEALS = "DEALS"
+# NOTE: article types are deliberately NOT defined in this module.
+#
+# They are a closed, version-controlled set whose single definition is
+# packages/config/src/thedrop_config/article_types.json, which TypeScript reads from
+# the same file. Import them from `thedrop_config` directly:
+#
+#     from thedrop_config import DEFAULT_ARTICLE_TYPE, EDITORIAL_ARTICLE_TYPES
+#
+# Re-exporting them here would add an indirection layer whose only effect is to make
+# the canonical location harder to find.
+#
+# Categories are the opposite case: runtime data owned by the `categories` table, with
+# no hardcoded list in either language. See docs/DOMAIN_MODEL.md.
 
 
 class ArticleStatus(StrEnum):

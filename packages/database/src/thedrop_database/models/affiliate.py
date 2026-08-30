@@ -39,6 +39,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from thedrop_config import commercial_forbidden_sql
 
 from thedrop_database.base import Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin
 from thedrop_database.enums import (
@@ -52,7 +53,12 @@ from thedrop_database.enums import (
 )
 
 #: Reused by every table that attaches commercial content to an article.
-_NOT_EDITORIAL = "article_type NOT IN ('NEWS', 'ANALYSIS', 'OPINION', 'COMMENTARY')"
+#
+# Generated from the canonical article-type definition rather than hand-written, so a
+# new type that forbids commercial content updates this constraint automatically.
+# The rendered SQL must stay byte-identical to what is applied in the database
+# (revision bf45495a0cae) or Alembic reports drift; a test asserts the exact string.
+_NOT_EDITORIAL = commercial_forbidden_sql()
 
 
 class AffiliateMerchant(Base, PrimaryKeyMixin, TimestampMixin):

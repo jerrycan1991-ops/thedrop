@@ -1,10 +1,13 @@
 import Link from "next/link";
 
-import { CATEGORIES, FOOTER_NAV, SITE } from "@thedrop/config";
+import { FOOTER_NAV, SITE } from "@thedrop/config";
 
 import { DropLockup } from "@/components/brand/DropMark";
+import { getNavCategories } from "@/lib/categories";
 
-export function SiteFooter() {
+export async function SiteFooter() {
+  const categories = await getNavCategories();
+
   return (
     <footer className="mt-20 border-t border-line bg-sunken">
       <div className="mx-auto max-w-[--page-width] px-4 py-14 sm:px-6">
@@ -23,7 +26,7 @@ export function SiteFooter() {
           <nav aria-label="Sections">
             <h2 className="meta mb-3">Sections</h2>
             <ul className="space-y-2">
-              {CATEGORIES.map((category) => (
+              {categories.map((category) => (
                 <li key={category.slug}>
                   <Link
                     href={`/${category.slug}`}

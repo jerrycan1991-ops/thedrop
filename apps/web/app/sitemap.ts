@@ -1,8 +1,9 @@
 import type { MetadataRoute } from "next";
 
-import { CATEGORIES, SITE } from "@thedrop/config";
+import { SITE } from "@thedrop/config";
 
 import { getLatest } from "@/lib/api-client";
+import { getAllCategories } from "@/lib/categories";
 
 export const revalidate = 600;
 
@@ -34,7 +35,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     priority: page.priority,
   }));
 
-  for (const category of CATEGORIES) {
+  // Every active category, including commercial sections — they belong in the
+  // standard sitemap even though they are excluded from the Google News one.
+  for (const category of await getAllCategories()) {
     entries.push({
       url: `${SITE.url}/${category.slug}`,
       lastModified: new Date(),

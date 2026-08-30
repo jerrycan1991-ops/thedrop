@@ -23,11 +23,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from thedrop_config import DEFAULT_ARTICLE_TYPE
 
 from thedrop_database.base import Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin
 from thedrop_database.enums import (
     ArticleStatus,
-    ArticleType,
     CorrectionType,
     MediaRole,
     RightsStatus,
@@ -75,7 +75,7 @@ class Article(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
         BigInteger, ForeignKey("categories.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     article_type: Mapped[str] = mapped_column(
-        String(32), default=ArticleType.NEWS, nullable=False, index=True
+        String(32), default=DEFAULT_ARTICLE_TYPE, nullable=False, index=True
     )
 
     headline: Mapped[str] = mapped_column(String(300), nullable=False)

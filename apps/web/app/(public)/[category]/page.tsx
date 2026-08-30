@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
-import { CATEGORIES, SITE } from "@thedrop/config";
+import { SITE } from "@thedrop/config";
 
 import { ArticleCard } from "@/components/article/ArticleCard";
-import { getArticles, getCategories } from "@/lib/api-client";
+import { getArticles } from "@/lib/api-client";
+import { findCategory, getAllCategories } from "@/lib/categories";
 
 export const revalidate = 120;
 
@@ -13,18 +14,24 @@ interface Props {
 }
 
 /**
- * Only known categories are pre-rendered. Unknown slugs fall through to a 404 rather
- * than generating a page — mass-generating empty category pages is exactly the
- * low-value indexing Google penalises.
+ * Pre-renders the categories that exist in the database at build time.
+ *
+ * `dynamicParams` stays at its default of true, so a category added after a build
+ * still renders on demand — the point of making the table authoritative is that
+ * adding one needs no deploy. Unknown slugs still 404 via `notFound()` below, so this
+ * does not mass-generate empty pages.
+ *
+ * If the API is unreachable during a build this returns an empty list: nothing is
+ * pre-rendered, every category page renders on demand, and the build still succeeds.
  */
 export async function generateStaticParams() {
-  return CATEGORIES.map((category) => ({ category: category.slug }));
+  const categories = await getAllCategories();
+  return categories.map((category) => ({ category: category.slug }));
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { category: slug } = await params;
-  const categories = await getCategories();
-  const category = categories.find((c) => c.slug === slug);
+  const category = await findCategory(slug);
 
   if (!category) return {};
 
@@ -43,12 +50,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function CategoryPage({ params }: Props) {
   const { category: slug } = await params;
 
-  const categories = await getCategories();
-  // Fall back to the static list so the page still renders if the API is down.
-  const category =
-    categories.find((c) => c.slug === slug) ??
-    CATEGORIES.find((c) => c.slug === slug);
+  const category = await findCategory(slug);
 
+  // A slug that is not a category is a 404 page — distinct from the API, where an
+  // unknown `?category=` filter returns 200 with an empty list (pinned by the Phase 0
+  // baseline). A page is a lookup; a query parameter is a filter.
   if (!category) notFound();
 
   const feed = await getArticles({ category: slug, pageSize: 24 });
@@ -63,7 +69,7 @@ export default async function CategoryPage({ params }: Props) {
         >
           {category.name}
         </h1>
-        {"description" in category && category.description && (
+        {category.description && (
           <p className="dek mt-3 max-w-2xl">{category.description}</p>
         )}
       </header>

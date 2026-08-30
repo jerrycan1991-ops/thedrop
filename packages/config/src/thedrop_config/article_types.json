@@ -1,0 +1,39 @@
+{
+  "$comment": [
+    "CANONICAL DEFINITION OF ARTICLE TYPES. Both languages read this file.",
+    "TypeScript imports it from packages/config/src/index.ts; Python loads it in",
+    "thedrop_config/article_types.py. There is no generated code and no second list.",
+    "",
+    "It lives inside the Python package directory so that it is present in both an",
+    "editable install and a built wheel without any path guessing.",
+    "",
+    "ORDER IS LOAD-BEARING. The four types with forbidsCommercial=true are rendered,",
+    "in this order, into the affiliate CHECK constraint:",
+    "  article_type NOT IN ('NEWS', 'ANALYSIS', 'OPINION', 'COMMENTARY')",
+    "Reordering them changes that SQL and would require an Alembic migration."
+  ],
+
+  "editorial": {
+    "NEWS": { "label": "News", "tone": "neutral", "forbidsCommercial": true },
+    "ANALYSIS": { "label": "Analysis", "tone": "info", "forbidsCommercial": true },
+    "OPINION": { "label": "Opinion", "tone": "accent", "forbidsCommercial": true },
+    "COMMENTARY": { "label": "Commentary", "tone": "accent", "forbidsCommercial": true },
+    "BREAKING": { "label": "Breaking", "tone": "breaking", "forbidsCommercial": false },
+    "EXPLAINER": { "label": "Explainer", "tone": "info", "forbidsCommercial": false },
+    "LIVE": { "label": "Live", "tone": "breaking", "forbidsCommercial": false }
+  },
+
+  "commercial": {
+    "PRODUCT_REVIEW": { "label": "Product Review" },
+    "BUYING_GUIDE": { "label": "Buying Guide" },
+    "BEST_PRODUCTS_LIST": { "label": "Best Products" },
+    "PRODUCT_COMPARISON": { "label": "Comparison" },
+    "PRODUCT_ROUNDUP": { "label": "Roundup" },
+    "GIFT_GUIDE": { "label": "Gift Guide" },
+    "BEST_FOR_GUIDE": { "label": "Best For" },
+    "TRENDING_PRODUCT": { "label": "Trending" },
+    "NEWS_PLUS_RECOMMENDATION": { "label": "News + Picks" },
+    "HOW_TO": { "label": "How-To" },
+    "DEALS": { "label": "Deals" }
+  }
+}

@@ -7,31 +7,34 @@ fails, something load-bearing was changed without understanding why it was there
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 
-from thedrop_database.enums import (
+import thedrop_config
+from thedrop_config import (
+    ARTICLE_TYPES,
+    COMMERCIAL_TYPES,
     EDITORIAL_ARTICLE_TYPES,
+    EDITORIAL_ARTICLE_TYPES_ORDERED,
+    commercial_forbidden_sql,
+)
+from thedrop_database.enums import (
     PUBLISHABLE_RIGHTS,
     TRUSTED_FIELD_SOURCES,
-    ArticleType,
-    CommercialType,
     FieldSource,
     RightsStatus,
 )
 from thedrop_database.models import affiliate as affiliate_models
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 class TestEditorialCommercialSeparation:
     def test_editorial_types_are_the_expected_four(self) -> None:
-        assert {
-            ArticleType.NEWS,
-            ArticleType.ANALYSIS,
-            ArticleType.OPINION,
-            ArticleType.COMMENTARY,
-        } == EDITORIAL_ARTICLE_TYPES
+        assert {"NEWS", "ANALYSIS", "OPINION", "COMMENTARY"} == EDITORIAL_ARTICLE_TYPES
 
     def test_no_commercial_type_is_also_an_editorial_type(self) -> None:
-        overlap = {t.value for t in CommercialType} & {t.value for t in ArticleType}
-        assert overlap == set()
+        assert set(COMMERCIAL_TYPES) & set(ARTICLE_TYPES) == set()
 
     def test_database_check_constraint_excludes_editorial_types(self) -> None:
         # PostgreSQL cannot express a cross-table CHECK, so `articles` carries a
@@ -48,6 +51,63 @@ class TestEditorialCommercialSeparation:
         table = affiliate_models.AffiliateArticle.__table__
         names = [str(c.name) for c in table.constraints if c.name]
         assert any(name.endswith("not_editorial_type") for name in names), names
+
+
+class TestSingleSourceOfTruth:
+    """Phase 1 guarantees. See docs/DOMAIN_MODEL.md."""
+
+    def test_article_types_have_exactly_one_definition(self) -> None:
+        # The canonical file lives inside the Python package so it is present in both
+        # an editable install and a built wheel. TypeScript imports the same file.
+        definition = (
+            Path(thedrop_config.__file__).parent / "article_types.json"
+        )
+        assert definition.is_file(), "canonical article-type definition is missing"
+
+        data = json.loads(definition.read_text(encoding="utf-8"))
+        assert set(data["editorial"]) == set(ARTICLE_TYPES)
+        assert set(data["commercial"]) == set(COMMERCIAL_TYPES)
+
+    def test_typescript_imports_the_same_definition(self) -> None:
+        # If TypeScript ever stops importing the JSON, it has grown a second list.
+        index_ts = REPO_ROOT / "packages" / "config" / "src" / "index.ts"
+        source = index_ts.read_text(encoding="utf-8")
+        assert "article_types.json" in source, "TypeScript no longer reads the canonical file"
+
+    def test_typescript_has_no_hardcoded_category_list(self) -> None:
+        # Categories are runtime rows. A `CATEGORIES = [...]` const in shared config
+        # would be a second source of truth and is exactly what Phase 1 removed.
+        source = (REPO_ROOT / "packages" / "config" / "src" / "index.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "export const CATEGORIES" not in source
+        assert "export const CATEGORY_SLUGS" not in source
+
+    def test_seed_categories_are_not_imported_by_application_code(self) -> None:
+        # The seed may define initial rows, but nothing may import them at runtime.
+        offenders = []
+        for path in (REPO_ROOT / "services").rglob("*.py"):
+            if "from thedrop_database.seed import" in path.read_text(encoding="utf-8"):
+                offenders.append(str(path))
+        assert offenders == [], f"seed data imported at runtime: {offenders}"
+
+    def test_generated_check_constraint_matches_the_applied_schema(self) -> None:
+        # Byte-identical to what revision bf45495a0cae applied. If this changes, the
+        # database has drifted from the models and needs a migration -- silently
+        # editing the generator would leave the constraint stale in production.
+        assert (
+            commercial_forbidden_sql()
+            == "article_type NOT IN ('NEWS', 'ANALYSIS', 'OPINION', 'COMMENTARY')"
+        )
+
+    def test_editorial_order_is_stable(self) -> None:
+        # Order is rendered into SQL, so it is part of the schema contract.
+        assert EDITORIAL_ARTICLE_TYPES_ORDERED == ("NEWS", "ANALYSIS", "OPINION", "COMMENTARY")
+
+    def test_every_forbidding_type_appears_in_the_constraint(self) -> None:
+        sql = commercial_forbidden_sql()
+        for name in EDITORIAL_ARTICLE_TYPES:
+            assert f"'{name}'" in sql
 
 
 class TestMediaRights:

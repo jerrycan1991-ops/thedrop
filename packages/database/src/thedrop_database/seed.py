@@ -30,6 +30,12 @@ from thedrop_database.models import (
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("seed")
 
+# INITIAL DATA ONLY -- not a runtime source of truth.
+#
+# These rows bootstrap an empty database. Once seeded, the `categories` TABLE is
+# authoritative: the site reads categories from it, and adding a category is a row,
+# not an edit here. This list is intentionally never imported by application code, and
+# the seed is idempotent, so editing it does not retroactively change existing rows.
 CATEGORIES = [
     ("trending", "Trending", "What the country is paying attention to right now.", 1),
     ("politics", "Politics", "US politics, policy and power.", 2),

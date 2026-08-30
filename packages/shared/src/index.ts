@@ -6,13 +6,17 @@
  * the API surface stops moving. Any drift is caught by the API contract tests.
  */
 
-import type { ArticleType, CategorySlug, CommercialArticleType } from "@thedrop/config";
+import type { ArticleType, CommercialArticleType } from "@thedrop/config";
 
 export type Iso8601 = string;
 export type Uuid = string;
 
 export interface Category {
-  slug: CategorySlug | string;
+  /**
+   * Free-form: categories are runtime rows, not a compile-time union. Narrowing this
+   * to a literal type would reintroduce the hardcoded list this phase removed.
+   */
+  slug: string;
   name: string;
   description: string | null;
   accentToken: string;
