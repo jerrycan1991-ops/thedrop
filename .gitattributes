@@ -1,0 +1,15 @@
+# Normalize to LF in the repository. The VPS is Linux; shell scripts and systemd
+# units break outright with CRLF endings, so this is correctness, not tidiness.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.service text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.avif binary
+*.woff2 binary
+*.mp4 binary
