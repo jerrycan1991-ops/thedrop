@@ -154,12 +154,36 @@ mandatory, not aspirational:
 
 ## 5. Migration status
 
-| Group | Endpoints | Implementation | Verified |
+| Endpoint | Served by | FastAPI still live? | Verified by |
 |---|---|---|---|
-| `public` | 4 routes / 16 baseline cases | **Both** — Node serves them; FastAPI still live | baseline + live parity |
-| `health` | 2 | FastAPI only | baseline |
-| `admin` | 7 | FastAPI only | baseline |
-| `worker` | 5 | FastAPI only | baseline |
+| `GET /public/categories` | **Node** | yes | baseline + parity |
+| `GET /public/articles` | **Node** | yes | baseline + parity |
+| `GET /public/articles/{c}/{y}/{m}/{d}/{slug}` | **Node** | yes | baseline + parity |
+| `GET /public/latest` | **Node** | yes | baseline + parity |
+| `GET /admin/auth/me` | **Node** | yes | baseline + parity |
+| `GET /admin/articles` | **Node** | yes | baseline + parity |
+| `GET /admin/settings` | **Node** | yes | baseline + parity |
+| `GET /admin/system/metrics` | **Node** | yes | baseline + parity |
+| `POST /admin/auth/login` | **Node** | yes | parity |
+| `POST /admin/auth/logout` | **Node** | yes | parity |
+| `PUT /admin/settings/{key}` | FastAPI (proxied) | — | baseline + RBAC matrix |
+| `POST /worker/heartbeat` | FastAPI (proxied) | — | baseline |
+| `POST /worker/jobs/claim` | FastAPI (proxied) | — | baseline |
+| `POST /worker/jobs/{id}/complete` | FastAPI (proxied) | — | baseline |
+| `POST /worker/jobs/{id}/fail` | FastAPI (proxied) | — | baseline |
+| `GET /worker/status` | FastAPI (proxied) | — | baseline |
+| `GET /healthz` | FastAPI only | — | baseline |
+| `GET /readyz` | FastAPI only | — | baseline |
+
+Routing is decided by the filesystem: a Next.js route handler under `app/api/v1/**`
+takes precedence over the `afterFiles` rewrite in `next.config.ts`, and everything
+without a handler falls through to FastAPI. `/healthz` and `/readyz` are not proxied at
+all — they report the FastAPI process's own health, so a Node copy would answer a
+different question.
+
+**Cross-tier sessions work in both directions**: a session minted by either server is
+accepted by the other, and either can log the other's session out. That is what makes
+the FastAPI fallback a real rollback path rather than a theoretical one.
 
 Since Phase 2 the public endpoints exist in **both** implementations. Next.js route
 handlers under `app/api/v1/public/` take precedence over the `afterFiles` rewrite in
