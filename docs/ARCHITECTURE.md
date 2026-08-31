@@ -1,8 +1,32 @@
 # THE DROP — Architecture
 
-Status: Phase 0 (design). No production changes made.
+Status: **Phase 0 design document, partially superseded.** The Node-first migration
+moved the public and admin HTTP layer into Next.js; see "Current state" below and
+ADR-0010. The design reasoning here is retained because it still explains *why* the
+system is shaped this way, but where it describes Next.js as a pure proxy it is out of
+date.
 Domain: https://thedrop.channel
-Last updated: 2026-08-30
+Last updated: 2026-08-31
+
+---
+
+## 0. Current state (post-migration)
+
+| | |
+|---|---|
+| Served by **Node** (Next.js route handlers) | 4 public read endpoints, 4 admin reads, login, logout — 10 total |
+| Served by **FastAPI** (proxied through Next) | `PUT /api/v1/admin/settings/{key}`, 5 worker endpoints |
+| FastAPI only (not proxied) | `/healthz`, `/readyz` |
+| Database | Both tiers connect directly. **Alembic remains the sole schema authority** (ADR-0010) |
+| Sessions | Redis, interchangeable between tiers in both directions |
+
+Route ownership is declared by the rewrite list in `apps/web/next.config.ts` and
+asserted by `tests/test_route_ownership.py`. It is deliberately **not** left to
+framework precedence: a catch-all rewrite once shadowed a Node route handler that
+existed and built correctly, and FastAPI served the endpoint unnoticed because both
+tiers returned identical responses.
+
+The rest of this document describes the original Phase 0 design.
 
 ---
 
@@ -115,7 +139,7 @@ Each line is a decision, not an oversight.
 | Ollama / torch / ONNX on the VPS | 2–4 GB of ML deps on a 4-core box | VPS does **cheap** dedup only (canonical URL, SimHash of title+lede, `pg_trgm`). All embeddings computed on the desktop. ADR-0005. |
 | Docker for the app processes | Image builds and container overhead on a build-constrained box | Docker Compose for **stateful services only**. App code runs natively under systemd. ADR-0002. |
 | Kubernetes, service mesh, Kafka/NATS | Absurd at this scale | Redis + Postgres. |
-| Next.js route handlers as the real backend | Splits business logic across two languages | Next.js only *rewrites* `/api/*` to FastAPI. All logic is Python. |
+| ~~Next.js route handlers as the real backend~~ | *Reversed.* The extra HTTP hop sat on the render path, and TTFB feeds Core Web Vitals and Google News eligibility | Next.js now owns the public and admin HTTP layer; Python keeps worker, queue and AI work. ADR-0010. |
 
 ---
 
@@ -132,7 +156,12 @@ Responsibilities:
 
 It does **not** talk to Postgres directly, run business rules, or hold secrets beyond a session-signing key and the internal API base URL.
 
-> **Data access rule:** the web app reads through the FastAPI read API (Redis-cached), not through its own DB client. One schema owner, one migration story. ADR-0006.
+> **Data access rule (SUPERSEDED).** This originally required the web app to read
+> through the FastAPI API rather than its own DB client. Since the migration, Next.js
+> queries PostgreSQL and Redis directly through `server-only` modules. Alembic is still
+> the single schema authority; what changed is *access*, not *ownership*. The
+> guarantees this rule used to provide, and what replaced each of them, are set out in
+> ADR-0010.
 
 ### 4.2 `services/api` — FastAPI (Python 3.12)
 
@@ -285,7 +314,8 @@ See `docs/adr/`.
 - ADR-0003 — Two-tier queue: Celery on VPS, HTTP job-lease for desktop
 - ADR-0004 — Admin lives inside `apps/web` as a route group
 - ADR-0005 — Single 384-dim embedding space, computed only on the desktop
-- ADR-0006 — FastAPI is the sole database owner
+- ADR-0006 — FastAPI is the sole database owner *(superseded by ADR-0010)*
 - ADR-0007 — Media on local disk behind a storage abstraction
 - ADR-0008 — Untrusted source content is structurally isolated from instructions
 - ADR-0009 — Affiliate product data carries per-field provenance; adapters are network-agnostic
+- ADR-0010 — Node and FastAPI share direct database access; Alembic remains the sole schema authority

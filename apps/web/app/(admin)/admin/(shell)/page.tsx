@@ -1,7 +1,10 @@
-import { headers } from "next/headers";
+import { cookies } from "next/headers";
 
 import { StatCard } from "@/components/admin/StatCard";
 import { WorkerStatusCard } from "@/components/admin/WorkerStatusCard";
+import { validateSession } from "@/lib/auth/session";
+import { systemMetrics } from "@/lib/db/queries/admin";
+import { redis } from "@/lib/redis/client";
 
 interface SystemMetrics {
   generatedAt: string;
@@ -24,26 +27,39 @@ interface SystemMetrics {
 }
 
 /**
- * Fetches admin metrics with the caller's cookies forwarded.
+ * Loads admin metrics through the server-side data layer.
  *
- * The API is the security boundary — it re-validates the session server-side. If it
- * says 401, we surface that rather than rendering a shell full of zeros, because a
- * dashboard that silently shows nothing is indistinguishable from a healthy quiet system.
+ * This used to `fetch()` FastAPI over HTTP, which survived the migration of
+ * /admin/system/metrics to Node: the dashboard kept calling the old tier, so the page
+ * still depended on FastAPI being up and still paid a network hop to reach its own
+ * database.
+ *
+ * Session validation is unchanged and still the security boundary — the same
+ * `validateSession` the API route uses, including its Redis TTL slide and epoch check.
+ * RBAC on the underlying endpoint is analyst/viewer (+admin); this page is already
+ * behind the admin session gate, and rendering is not the place to duplicate the
+ * authorization rule, so an unauthenticated visitor is told to sign in and the API
+ * route remains the enforcement point for programmatic access.
  */
 async function getMetrics(): Promise<SystemMetrics | { error: string }> {
-  const apiBase = process.env.API_INTERNAL_URL ?? "http://127.0.0.1:8000";
-  const cookie = (await headers()).get("cookie") ?? "";
+  const sessionId = (await cookies()).get("thedrop_session")?.value;
+  const session = await validateSession(sessionId);
+
+  if (!session.ok) {
+    return { error: "Session expired. Sign in again." };
+  }
 
   try {
-    const response = await fetch(`${apiBase}/api/v1/admin/system/metrics`, {
-      headers: { cookie },
-      cache: "no-store",
-    });
-    if (response.status === 401) return { error: "Session expired. Sign in again." };
-    if (!response.ok) return { error: `API returned ${response.status}` };
-    return (await response.json()) as SystemMetrics;
-  } catch {
-    return { error: "Cannot reach the API. Is thedrop-api running?" };
+    let redisOk = true;
+    try {
+      await redis.ping();
+    } catch {
+      redisOk = false;
+    }
+    return (await systemMetrics(redisOk)) as unknown as SystemMetrics;
+  } catch (error) {
+    console.error("[admin] metrics unavailable", error);
+    return { error: "Cannot load metrics. Is PostgreSQL running?" };
   }
 }
 

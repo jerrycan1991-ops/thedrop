@@ -64,6 +64,22 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T postgres \
   pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > "$SNAPSHOT" \
   || fail "backup failed - refusing to migrate without one"
 
+# ---------------------------------------------------------------- build-time env gate
+# NEXT_PUBLIC_* values are inlined by `next build`; setting them at runtime does
+# nothing. A production release built without NEXT_PUBLIC_SITE_URL ships canonical
+# URLs, a sitemap and OpenGraph tags all pointing at http://localhost:3100 -- and the
+# site looks completely healthy while doing it.
+if [[ "${ENVIRONMENT:-}" == "production" ]]; then
+  if [[ -z "${NEXT_PUBLIC_SITE_URL:-}" ]]; then
+    fail "NEXT_PUBLIC_SITE_URL is not set. It is inlined at build time and drives every canonical URL, the sitemap and OpenGraph. Set it in $ENV_FILE before deploying."
+  fi
+  case "$NEXT_PUBLIC_SITE_URL" in
+    https://*) : ;;
+    *) fail "NEXT_PUBLIC_SITE_URL must be an https:// origin in production (got: $NEXT_PUBLIC_SITE_URL)" ;;
+  esac
+  log "build-time env gate: NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL"
+fi
+
 # ---------------------------------------------------------------- dependencies
 log "installing dependencies"
 pnpm install --frozen-lockfile
@@ -111,6 +127,40 @@ rollback() {
 
 wait_for "$API_URL" "api" || { log "api failed readiness"; rollback; }
 wait_for "$WEB_URL" "web" || { log "web failed readiness"; rollback; }
+
+# --- route ownership gate ---------------------------------------------------
+# A homepage 200 does not prove the API tier is wired correctly. A route handler can
+# exist, build, and still be shadowed by a proxy rewrite so that FastAPI answers
+# instead -- that happened to the article detail route and no test caught it, because
+# both tiers returned identical responses.
+#
+# These two checks assert the split is intact end to end:
+#   * a Node-owned endpoint answers through the web port
+#   * a FastAPI-owned endpoint still reaches FastAPI through the same port
+ownership_gate() {
+  local node_code proxied_code
+
+  node_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    "http://127.0.0.1:3100/api/v1/public/categories" || echo 000)
+  if [[ "$node_code" != "200" ]]; then
+    log "ownership gate: Node-owned /api/v1/public/categories returned $node_code (want 200)"
+    return 1
+  fi
+
+  # Unauthenticated worker status must reach FastAPI and be rejected by it.
+  proxied_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    "http://127.0.0.1:3100/api/v1/worker/status" || echo 000)
+  if [[ "$proxied_code" != "401" ]]; then
+    log "ownership gate: proxied /api/v1/worker/status returned $proxied_code (want 401)"
+    log "                the FastAPI proxy rewrite is broken or thedrop-api is down"
+    return 1
+  fi
+
+  log "health gate: route ownership OK (Node 200, proxy 401)"
+  return 0
+}
+
+ownership_gate || { log "route ownership gate failed"; rollback; }
 
 # ---------------------------------------------------------------- done
 echo "$TARGET_SHA" > "$LAST_GOOD_FILE"

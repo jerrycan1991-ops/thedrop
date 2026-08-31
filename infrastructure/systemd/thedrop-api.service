@@ -15,7 +15,11 @@ EnvironmentFile=/etc/thedrop/thedrop.env
 # Migrations run before the service accepts traffic. Idempotent, so a restart on an
 # already-migrated database is a no-op.
 ExecStartPre=/opt/thedrop/.venv/bin/alembic -c /opt/thedrop/packages/database/alembic.ini upgrade head
-ExecStart=/opt/thedrop/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --no-access-log
+# --proxy-headers matches infrastructure/docker/Dockerfile.api. FastAPI only ever
+# receives traffic from the Next.js rewrite on loopback, so the trusted-proxy list is
+# 127.0.0.1 rather than the container image's '*'. Without this, X-Forwarded-For is
+# ignored and every request appears to come from the proxy.
+ExecStart=/opt/thedrop/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --no-access-log --proxy-headers --forwarded-allow-ips=127.0.0.1
 
 Restart=always
 RestartSec=5

@@ -1,6 +1,11 @@
 # ADR-0006: FastAPI is the sole owner of the database
 
-Status: Accepted (Phase 0)
+Status: **SUPERSEDED by ADR-0010** (the Node migration gave the web tier direct
+database access). Retained unchanged as the record of why the boundary was drawn this
+way originally — the reasoning below is still correct about what the boundary bought,
+which is what ADR-0010 has to replace with something else.
+
+Originally accepted: Phase 0
 Date: 2026-08-30
 
 ## Context
