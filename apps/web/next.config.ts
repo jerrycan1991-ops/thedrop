@@ -64,16 +64,44 @@ const nextConfig: NextConfig = {
     remotePatterns: [],
   },
 
+  /**
+   * Proxy ONLY the paths FastAPI still owns.
+   *
+   * This used to be a catch-all `/api/v1/:path*`, on the assumption that a Next.js
+   * route handler always wins over an `afterFiles` rewrite. That assumption is wrong
+   * for deeply-nested dynamic routes: `/api/v1/public/articles/[category]/[year]/
+   * [month]/[day]/[slug]` lost to the catch-all and was served by FastAPI in BOTH dev
+   * and a production build, even though the handler existed and appeared in the route
+   * manifest. Nothing caught it because both tiers returned byte-identical responses —
+   * it was only provable with a controlled difference (a production server with no
+   * DATABASE_URL: Node 500s, the proxy returns FastAPI's 404).
+   *
+   * Listing the FastAPI-owned paths explicitly makes ownership a declaration rather
+   * than a race against framework precedence, and any future migration is one line
+   * removed from this list.
+   *
+   * ROLLBACK: to hand an endpoint back to FastAPI, delete the Node route file AND add
+   * its path here. Restoring the old catch-all below also works and returns every
+   * unmatched /api/v1 path to FastAPI:
+   *
+   *   { source: "/api/v1/:path*", destination: `${API_INTERNAL_URL}/api/v1/:path*` }
+   *
+   * Proxying keeps browser requests first-party, so the session cookie stays a
+   * first-party cookie on thedrop.channel and no CORS preflight sits on the hot path.
+   */
   async rewrites() {
     return [
+      // Worker lease, heartbeat, job claim/complete/fail, status.
       {
-        // Proxying keeps every browser request first-party: no CORS preflight on
-        // the hot path, and the session cookie stays a first-party cookie on
-        // thedrop.channel rather than relying on cross-site cookie behaviour that
-        // browsers keep tightening. CORS on the API is configured as well, for
-        // direct access, but this is the path the app itself uses.
-        source: "/api/v1/:path*",
-        destination: `${API_INTERNAL_URL}/api/v1/:path*`,
+        source: "/api/v1/worker/:path*",
+        destination: `${API_INTERNAL_URL}/api/v1/worker/:path*`,
+      },
+      // PUT /admin/settings/{key} — the only admin WRITE still in FastAPI.
+      // `:key` matches exactly one segment, so it cannot shadow the Node-owned
+      // `/api/v1/admin/settings` collection route.
+      {
+        source: "/api/v1/admin/settings/:key",
+        destination: `${API_INTERNAL_URL}/api/v1/admin/settings/:key`,
       },
     ];
   },
