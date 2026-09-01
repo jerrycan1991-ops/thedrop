@@ -147,6 +147,19 @@ def login(client: httpx.Client) -> str:
     session_id = response.cookies.get("thedrop_session")
     if not session_id:
         raise LoginError("login succeeded but set no thedrop_session cookie")
+
+    # Do not let the session live in the client's cookie jar.
+    #
+    # httpx keeps a persistent jar per Client, and `client.request(..., cookies=None)`
+    # does NOT suppress it -- it merges. So a jar populated here rode along on every
+    # subsequent request, including the four `*_anonymous` admin endpoints whose entire
+    # purpose is to pin the 401. They returned 200 with a real admin body, which looked
+    # like an auth regression and, worse, meant no full run ever verified the guard.
+    #
+    # The session is returned to the caller and attached explicitly per request in
+    # `fetch()`. Reading it off the RESPONSE above works whether or not the jar is
+    # populated, so clearing here costs nothing.
+    client.cookies.clear()
     return session_id
 
 
@@ -248,8 +261,18 @@ def normalise(value: Any) -> Any:
 def fetch(
     client: httpx.Client, method: str, path: str, session_id: str | None = None
 ) -> dict[str, Any]:
-    cookies = {"thedrop_session": session_id} if session_id else None
-    response = client.request(method, path, cookies=cookies)
+    # The session travels as an explicit header, never through the client's cookie jar
+    # (see `login`). `_logout` already used this form; this makes it the rule.
+    if session_id:
+        headers = {"Cookie": f"thedrop_session={session_id}"}
+    else:
+        # Defence in depth: an anonymous capture must be genuinely anonymous even if
+        # some future edit repopulates the jar. Clearing costs one dict operation and
+        # removes a whole class of silently-passing auth checks.
+        client.cookies.clear()
+        headers = {}
+
+    response = client.request(method, path, headers=headers)
     try:
         body = normalise(response.json())
     except ValueError:
