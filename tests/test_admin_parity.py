@@ -30,6 +30,7 @@ from rbac_fixtures import (
 from sqlalchemy import delete, select
 from thedrop_config import get_settings
 from thedrop_database import session_scope
+from thedrop_database.enums import ArticleProvenance
 from thedrop_database.models import Article, Category
 
 pytestmark = [
@@ -124,6 +125,11 @@ def articles() -> Iterator[int]:
                     article_type="NEWS" if i % 2 == 0 else "ANALYSIS",
                     headline=f"Admin parity article {i}",
                     dek=f"Dek {i}",
+                    # Fixtures state provenance explicitly because every writer must:
+                    # the column has no default precisely so an omission fails loudly
+                    # rather than defaulting into the value that escapes the
+                    # traceability constraint.
+                    provenance=ArticleProvenance.MANUAL,
                     status=status,
                     risk_tier="high" if i == 3 else "standard",
                     editorial_confidence=None if i == 0 else 70 + i,
@@ -142,6 +148,7 @@ def articles() -> Iterator[int]:
                 article_type="NEWS",
                 headline="Soft deleted",
                 dek="",
+                provenance=ArticleProvenance.MANUAL,
                 status="published",
                 deleted_at=datetime.now(UTC),
             )

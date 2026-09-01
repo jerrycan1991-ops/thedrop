@@ -66,6 +66,37 @@ class Article(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
             "editorial_confidence IS NULL OR (editorial_confidence BETWEEN 0 AND 100)",
             name="editorial_confidence_range",
         ),
+        CheckConstraint(
+            "provenance IN ('manual', 'generated')",
+            name="provenance_values",
+        ),
+        # THE traceability invariant, at the only layer that cannot be bypassed.
+        #
+        # CLAUDE.md: "Every published article traces every factual sentence to a claim
+        # id with stored evidence." Until now nothing enforced that. This constraint
+        # exists BEFORE generation does, so the generator is born compliant rather than
+        # audited into compliance later -- retrofitting it onto published rows would
+        # mean regenerating or retracting them.
+        #
+        # It is deliberately vacuous today: nothing sets provenance='generated', so no
+        # row can violate it yet.
+        #
+        # HONEST LIMIT: a CHECK cannot reference another table, so this asserts "QA
+        # certified the trace", not "claims rows exist". The real check is the
+        # deterministic QA rule pass (PIPELINE.md §14), which is what sets the column.
+        # This is the backstop that stops a bug or a bad manual UPDATE from publishing
+        # generated prose that QA never cleared.
+        #
+        # `updated` is included alongside `published` because it also means "live".
+        # Only `published` renders today (both tiers filter on it), but a status that
+        # means live must not be a hole in the invariant the day someone adds it to the
+        # query.
+        CheckConstraint(
+            "provenance <> 'generated' "
+            "OR status NOT IN ('published', 'updated') "
+            "OR traceability_verified_at IS NOT NULL",
+            name="generated_live_requires_traceability",
+        ),
     )
 
     story_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
@@ -105,6 +136,22 @@ class Article(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     qa_report: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     risk_tier: Mapped[str] = mapped_column(
         String(16), default=RiskTier.STANDARD, nullable=False
+    )
+
+    # No default, in either layer. An omitted provenance must raise a NOT NULL
+    # violation, not quietly become 'manual' -- 'manual' is the value that escapes the
+    # traceability constraint below, so defaulting to it would make a generator that
+    # forgets to set this field publish untraceable prose silently. Fail closed.
+    provenance: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        comment="How this article was produced: 'manual' (a named human author is "
+        "accountable) or 'generated' (must carry claim traceability to go live).",
+    )
+    traceability_verified_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        comment="Set by editorial QA once every factual sentence resolved to a claim "
+        "id with stored evidence. Nothing writes it yet -- claims land in step 7.",
     )
 
     first_published_at: Mapped[dt.datetime | None] = mapped_column(

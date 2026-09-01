@@ -35,6 +35,23 @@ class ArticleStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class ArticleProvenance(StrEnum):
+    """How an article was produced.
+
+    This is a safety boundary, not a label. CLAUDE.md requires every published article
+    to trace each factual sentence to a claim id with stored evidence. That requirement
+    is meaningful only for machine-generated prose; a human author is accountable for
+    their own sentences by being named on them.
+
+    Splitting the two makes the boundary explicit in the schema instead of implicit in
+    whoever happens to be reading the code. Without it, `manual` and `generated` are
+    indistinguishable after the fact and the invariant is unenforceable for both.
+    """
+
+    MANUAL = "manual"
+    GENERATED = "generated"
+
+
 class RiskTier(StrEnum):
     """Drives how much evidence a claim needs. See PIPELINE.md §11."""
 
