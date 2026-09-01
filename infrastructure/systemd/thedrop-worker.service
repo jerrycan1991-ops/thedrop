@@ -1,9 +1,9 @@
 [Unit]
 Description=THE DROP Celery worker (ingest, maintain, publish)
 Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
-After=network-online.target docker.service thedrop-api.service
+After=network-online.target postgresql.service thedrop-redis.service thedrop-api.service
 Wants=network-online.target
-Requires=docker.service
+Requires=postgresql.service thedrop-redis.service
 
 [Service]
 Type=exec

@@ -215,6 +215,20 @@ live servers, so temporary fixture data can exercise those paths. Phase 2 used s
 temporary articles to verify pagination across four pages, hero-image serialisation,
 wrong-date 404s and wrong-category 404s, then removed them.
 
+### Anonymous captures must stay anonymous
+
+The four `admin_*_anonymous` baselines pin the 401 guard, and the tool authenticates in
+the same run to capture the authenticated bodies. Those two facts fight each other:
+`httpx.Client` keeps a persistent cookie jar, and `client.request(..., cookies=None)`
+merges with that jar rather than suppressing it. A session left in the jar by `login()`
+therefore rode along on the anonymous requests, which answered 200 with a real admin
+body — a full run reported a false auth regression, and the guard those four baselines
+exist to pin was never actually exercised. `--group admin` hid it, because with no
+authenticated endpoint selected there is no login.
+
+The rule now: the jar is cleared after login, and the session is attached per request as
+an explicit `Cookie` header. `tests/test_baseline_tool.py` fails if it ever leaks back.
+
 ## 6. Session format — a migration contract
 
 Captured before any auth migration, because Node must read exactly this. Verified by

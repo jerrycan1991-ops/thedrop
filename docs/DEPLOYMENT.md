@@ -14,13 +14,13 @@ Target: Ubuntu 24.04 VPS, 4 vCPU / 8 GB RAM, existing hosting-panel nginx alread
   current -> releases/<ts>     # symlink the systemd units point at
 /etc/thedrop/thedrop.env       # secrets, 0640 root:thedrop
 /var/www/thedrop/media/        # generated media, symlinked into the web public dir
-/var/lib/thedrop/pgdata/       # Postgres volume (docker compose bind mount)
+/var/lib/thedrop/pgdata/       # unused; Postgres keeps its own /var/lib/postgresql
 /var/lib/thedrop/redis/        # Redis volume
 /var/backups/thedrop/          # nightly dumps
 /var/log/thedrop/              # only for anything not going to journald
 ```
 
-Service account: `thedrop` (system user, no login shell, member of `docker`).
+Service account: `thedrop` (system user, no login shell). It owns the deploy tree, the Redis data directory and the media directory. No `docker` group — there is no Docker on this host.
 
 ---
 
@@ -28,13 +28,17 @@ Service account: `thedrop` (system user, no login shell, member of `docker`).
 
 | Component | Runs as | Why |
 |---|---|---|
-| PostgreSQL 16 + pgvector | Docker Compose | pinned image, pgvector preinstalled, isolated, easy version pinning |
-| Redis 7 | Docker Compose | same |
+| PostgreSQL 16 + pgvector | systemd (distro package) | one process manager on the host; pgvector is an apt package, not a reason for a container |
+| Redis 7 | systemd (dedicated instance, port 6380) | isolated from the panel's Redis on 6379, which evicts under an LRU policy |
 | Next.js, FastAPI, Celery | systemd, native | no image rebuild per deploy, ~300 MB less overhead, faster restarts, simpler logs |
 
-Rationale in ADR-0002.
+Rationale in ADR-0011, which supersedes the data-services half of ADR-0002.
+
+**Docker is not installed on the VPS.** `infrastructure/docker/` is local-development
+only.
 
 ---
+
 
 ## 3. One-time provisioning
 
@@ -62,13 +66,12 @@ sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw al
 
 Verify: `sudo ufw status verbose` — 22, 80, 443 only.
 
-### 3.3 Docker
+### 3.3 Data service packages
 
-```bash
-curl -fsSL https://get.docker.com | sudo sh
-```
+No Docker. PostgreSQL and Redis are installed as host packages in §4 (ADR-0011).
 
-(Reviewed installer, official source. Verify: `docker --version && docker compose version`.)
+---
+
 
 ### 3.4 Node 22 and pnpm
 
@@ -92,7 +95,6 @@ Verify: `python3.12 --version`, `uv --version`.
 
 ```bash
 sudo useradd --system --home /opt/thedrop --shell /usr/sbin/nologin thedrop || true
-sudo usermod -aG docker thedrop
 sudo mkdir -p /opt/thedrop /etc/thedrop /var/www/thedrop/media /var/lib/thedrop/pgdata /var/lib/thedrop/redis /var/backups/thedrop
 sudo chown -R thedrop:thedrop /opt/thedrop /var/www/thedrop /var/lib/thedrop /var/backups/thedrop
 sudo chown root:thedrop /etc/thedrop && sudo chmod 750 /etc/thedrop
@@ -102,69 +104,112 @@ sudo chown root:thedrop /etc/thedrop && sudo chmod 750 /etc/thedrop
 
 ## 4. Data services
 
-`infrastructure/docker/docker-compose.yml` (bind addresses are load-bearing — see SECURITY.md §2):
+PostgreSQL and Redis run **natively under systemd**, not in containers (ADR-0011). The
+VPS is managed by a hosting panel that already runs its own MySQL, nginx, Redis, Varnish
+and PHP-FPM pools; adding a Docker daemon would be a third process manager on the box
+for two services the distro packages well.
 
-```yaml
-services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: thedrop
-      POSTGRES_USER: thedrop
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "127.0.0.1:5432:5432"   # MUST stay loopback-bound; a bare 5432:5432 bypasses UFW
-    volumes:
-      - /var/lib/thedrop/pgdata:/var/lib/postgresql/data
-    command: >
-      postgres -c shared_buffers=1GB -c effective_cache_size=3GB
-               -c work_mem=16MB -c maintenance_work_mem=256MB
-               -c max_connections=60 -c random_page_cost=1.1
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U thedrop -d thedrop"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - /var/lib/thedrop/redis:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 768M
-```
-
-Start:
+### 4.1 PostgreSQL 16 + pgvector
 
 ```bash
-cd /opt/thedrop && docker compose -f infrastructure/docker/docker-compose.yml --env-file /etc/thedrop/thedrop.env up -d
+sudo apt install -y postgresql-16 postgresql-16-pgvector
 ```
 
-Verify:
+Verify the extension is available before going further — it is a separate package, and a
+missing one surfaces as a failed migration minutes into a deploy:
 
 ```bash
-docker compose -f infrastructure/docker/docker-compose.yml ps && docker exec thedrop-postgres-1 psql -U thedrop -d thedrop -c "SELECT extname FROM pg_extension;"
+sudo -u postgres psql -tAc "SELECT 1 FROM pg_available_extensions WHERE name='vector'"
 ```
 
-Expect `vector` present after migrations create it.
+Expect `1`. If the package is not found, add the PGDG repository rather than dropping
+pgvector: semantic search and dedup depend on it (ADR-0005).
+
+Create the role and database. Use the same password you put in `POSTGRES_PASSWORD`:
+
+```bash
+sudo -u postgres createuser --pwprompt thedrop && sudo -u postgres createdb -O thedrop thedrop
+```
+
+Postgres listens on `127.0.0.1:5432` by default on Ubuntu, which is what we want — the
+firewall is a backstop, not the control. Confirm it is not listening publicly:
+
+```bash
+sudo ss -lntp | grep 5432
+```
+
+Tuning for an 8 GB box shared with a panel, in
+`/etc/postgresql/16/main/conf.d/thedrop.conf`:
+
+```
+shared_buffers = 1GB
+effective_cache_size = 3GB
+work_mem = 16MB
+maintenance_work_mem = 256MB
+max_connections = 60
+random_page_cost = 1.1
+log_min_duration_statement = 1000
+```
+
+> **Pin the version.** An `apt upgrade` can move the Postgres minor version where an
+> image tag could not. Add `postgresql-*` to unattended-upgrades' blacklist. This is the
+> cost ADR-0011 accepts in exchange for dropping Docker.
+
+### 4.2 Redis — a second, dedicated instance
+
+The panel's Redis on 6379 is left alone. This project runs its own on **6380**.
+
+Reusing the panel's instance is not an option: it is shared with PHP sites under an
+eviction policy, and this application keeps admin sessions and login rate-limit counters
+in Redis. An evicted rate-limit counter is a silently disabled safeguard.
+
+```bash
+sudo apt install -y redis-server
+```
+
+Ubuntu's package enables `redis-server.service` on 6379. That unit belongs to the panel;
+leave it running and add ours alongside:
+
+```bash
+sudo install -m 0640 -o root -g thedrop /opt/thedrop/infrastructure/redis/thedrop-redis.conf /etc/thedrop/redis.conf
+```
+
+Then set the password in `/etc/thedrop/redis.conf` — uncomment `requirepass` and use the
+**same value** as `REDIS_PASSWORD` in `/etc/thedrop/thedrop.env`. `deploy.sh` compares
+the two and refuses to run if they disagree, because a mismatch otherwise presents as a
+generic connection error.
+
+```bash
+sudo cp /opt/thedrop/infrastructure/systemd/thedrop-redis.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now thedrop-redis
+```
+
+Verify both instances are up and separate:
+
+```bash
+redis-cli -p 6380 -a "$REDIS_PASSWORD" --no-auth-warning ping && sudo ss -lntp | grep -E ':(6379|6380)'
+```
+
+Expect `PONG` and two listeners.
+
+### 4.3 Env file wiring
+
+The application reaches both over loopback. In `/etc/thedrop/thedrop.env`:
+
+```
+POSTGRES_HOST_PORT=5432
+REDIS_HOST_PORT=6380
+DATABASE_URL=postgresql+psycopg://thedrop:<password>@127.0.0.1:5432/thedrop
+REDIS_URL=redis://:<password>@127.0.0.1:6380/0
+CELERY_BROKER_URL=redis://:<password>@127.0.0.1:6380/1
+CELERY_RESULT_BACKEND=redis://:<password>@127.0.0.1:6380/2
+```
+
+`deploy.sh` verifies all of this — both services active, both reachable with the
+configured credentials, `vector` available, passwords consistent — before it touches
+anything.
 
 ---
+
 
 ## 5. systemd units
 
@@ -173,8 +218,8 @@ Expect `vector` present after migrations create it.
 ```ini
 [Unit]
 Description=THE DROP API (FastAPI)
-After=network-online.target docker.service
-Requires=docker.service
+After=network-online.target postgresql.service thedrop-redis.service
+Requires=postgresql.service thedrop-redis.service
 
 [Service]
 Type=exec
@@ -213,27 +258,60 @@ sudo cp /opt/thedrop/infrastructure/systemd/*.service /etc/systemd/system/ && su
 
 ## 6. Deploy procedure
 
-`infrastructure/scripts/deploy.sh`, run as `thedrop`:
+**The default path builds on the desktop.** `next build` is the only sustained
+CPU/RAM spike a deploy asks of the VPS, and the VPS is a publishing and coordination
+tier — it does not think (ARCHITECTURE.md §3). Building where the work belongs keeps
+~1.5 GB of build pressure off a box that is also running Postgres, Redis and a hosting
+panel.
 
-1. `git fetch --all && git checkout <ref>` in `/opt/thedrop`
-2. `pnpm install --frozen-lockfile`
-3. `uv sync --frozen`
-4. `pnpm --filter @thedrop/web build` with `NODE_OPTIONS=--max-old-space-size=1536`
-5. `alembic upgrade head` (also runs as `ExecStartPre`; idempotent)
-6. `sudo systemctl restart thedrop-api thedrop-worker thedrop-web`
-7. Health gate: poll `http://127.0.0.1:3100/healthz` and `http://127.0.0.1:8000/healthz` for up to 60 s; non-200 → automatic rollback
+### Standard deploy — build on the desktop
 
-Downtime is a ~2–4 s restart window. Nginx returns 502 briefly. If that ever becomes unacceptable, the release-symlink + socket-activation path is documented in §10 — but it adds moving parts, so it is deliberately not in Phase 1.
-
-### Build-on-desktop option
-
-If a VPS build is ever slow or memory-tight:
+On the desktop, from the repo root:
 
 ```bash
-pnpm --filter @thedrop/web build && rsync -az --delete apps/web/.next/standalone/ thedrop@<vps>:/opt/thedrop/apps/web/.next/standalone/
+VPS_HOST=thedrop@<vps-ip> NEXT_PUBLIC_SITE_URL=https://thedrop.channel bash infrastructure/scripts/build-and-push.sh <git-ref>
 ```
 
-Only valid when the desktop's Node version matches the VPS's.
+Then on the VPS:
+
+```bash
+sudo -u thedrop bash /opt/thedrop/infrastructure/scripts/deploy.sh <git-ref> --no-build
+```
+
+`build-and-push.sh` refuses to build from a dirty tree, enforces the Node major from
+`.tool-versions`, gates on an `https://` `NEXT_PUBLIC_SITE_URL`, copies the static assets
+into the standalone tree, writes a `.thedrop-build` manifest recording the SHA, site URL
+and Node major, then rsyncs with `--delete`.
+
+`deploy.sh --no-build` verifies that manifest against the SHA it is deploying before it
+restarts anything. That check exists because `NEXT_PUBLIC_SITE_URL` is inlined at build
+time: once the bundle reaches the VPS the value is already baked in, nothing on the
+server can correct it, and a site serving `http://localhost:3100` canonical URLs looks
+completely healthy. A stale bundle from a failed rsync fails the SHA comparison rather
+than shipping yesterday's UI.
+
+### Fallback — build on the VPS
+
+```bash
+sudo -u thedrop bash /opt/thedrop/infrastructure/scripts/deploy.sh <git-ref>
+```
+
+Same script without `--no-build`. Capped at `--max-old-space-size=1536` with the 4 GB
+swapfile behind it. Use when the desktop is unavailable.
+
+### What deploy.sh does, either way
+
+1. `git fetch && git checkout <ref>` in `/opt/thedrop`
+2. Node major matches `.tool-versions`
+3. Data services active and reachable; `vector` extension available; Redis passwords consistent
+4. `pg_dump` snapshot to `/var/backups/thedrop` — refuses to migrate without one
+5. `uv sync --frozen`
+6. Build, or verify the prebuilt bundle's manifest
+7. `alembic upgrade head` (also runs as `ExecStartPre`; idempotent)
+8. `systemctl restart thedrop-api thedrop-worker thedrop-web`
+9. Health gate, route-ownership gate, static-asset gate — any failure rolls back
+
+Downtime is a ~2–4 s restart window. Nginx returns 502 briefly. If that ever becomes unacceptable, the release-symlink + socket-activation path is documented in §10 — but it adds moving parts, so it is deliberately not in Phase 1.
 
 ---
 
@@ -272,7 +350,7 @@ No Prometheus stack in Phase 1 (ARCHITECTURE.md §3.2).
 Nightly cron as `thedrop`:
 
 ```bash
-docker exec thedrop-postgres-1 pg_dump -U thedrop -Fc thedrop > /var/backups/thedrop/thedrop-$(date +%F).dump
+PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U thedrop -Fc thedrop > /var/backups/thedrop/thedrop-$(date +%F).dump
 ```
 
 Retention 14 daily + 8 weekly, plus an off-box copy (rsync to the desktop is sufficient and free).
@@ -280,7 +358,7 @@ Retention 14 daily + 8 weekly, plus an off-box copy (rsync to the desktop is suf
 **Restore drill — run once before Phase 2, then quarterly:**
 
 ```bash
-docker exec -i thedrop-postgres-1 createdb -U thedrop thedrop_restoretest && docker exec -i thedrop-postgres-1 pg_restore -U thedrop -d thedrop_restoretest < /var/backups/thedrop/<file>.dump
+PGPASSWORD="$POSTGRES_PASSWORD" createdb -h 127.0.0.1 -U thedrop thedrop_restoretest && PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -h 127.0.0.1 -U thedrop -d thedrop_restoretest /var/backups/thedrop/<file>.dump
 ```
 
 A backup that has never been restored is not a backup.
@@ -327,6 +405,6 @@ A backup that has never been restored is not a backup.
 
 > **The web tier now needs `DATABASE_URL` and `REDIS_URL`.** Before the Node migration
 > it needed neither. `thedrop-web.service` reads the same `EnvironmentFile`, and now
-> declares `Requires=docker.service` because Postgres and Redis run under Compose.
+> declares `Requires=postgresql.service thedrop-redis.service` (ADR-0011).
 
 None are needed to complete Phase 1 except the first four.

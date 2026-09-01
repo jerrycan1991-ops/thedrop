@@ -1,4 +1,11 @@
-# Production data services (VPS).
+# SUPERSEDED for production by ADR-0011.
+#
+# PostgreSQL and Redis now run natively under systemd on the VPS; Docker is not
+# installed there. This file is kept as the record of the previous topology and as
+# the fallback if the containerised path is ever revisited. `deploy.sh` no longer
+# references it. For local development use docker-compose.dev.yml.
+#
+# Previously: production data services (VPS).
 #
 # ONLY Postgres and Redis run in Docker. The application processes -- Next.js, FastAPI
 # and the Celery worker -- run natively under systemd (ADR-0002): no image build per
@@ -22,7 +29,10 @@ services:
       # CRITICAL: the 127.0.0.1 prefix is load-bearing. Docker publishes ports by
       # writing DOCKER-USER iptables rules that bypass UFW entirely, so a bare
       # "5432:5432" would expose this database to the internet despite the firewall.
-      - "127.0.0.1:5432:5432"
+      #
+      # The HOST port is configurable because the VPS is shared with a hosting panel
+      # that runs its own MySQL/Redis. The CONTAINER port never changes.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - /var/lib/thedrop/pgdata:/var/lib/postgresql/data
     command: >
@@ -62,7 +72,12 @@ services:
       --rename-command FLUSHDB ""
       --rename-command CONFIG ""
     ports:
-      - "127.0.0.1:6379:6379"
+      # CloudPanel ships its own Redis on 6379. Publishing there too makes
+      # `docker compose up` fail with "port is already allocated", so on a panel-managed
+      # host set REDIS_HOST_PORT=6380 in the env file. A separate instance is the point:
+      # the panel's Redis is shared with PHP sites under an LRU policy that would evict
+      # admin sessions and login rate-limit counters.
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - /var/lib/thedrop/redis:/data
     healthcheck:

@@ -1,6 +1,12 @@
 # ADR-0002: Docker Compose for stateful services only; app processes under systemd
 
-Status: Accepted (Phase 0)
+Status: Partially superseded by [ADR-0011](0011-native-data-services.md) (2026-09-02)
+
+> The data-services half of this decision is reversed: PostgreSQL and Redis now
+> run natively under systemd and Docker is not installed on the VPS. The other
+> half -- application processes run natively rather than in containers -- stands,
+> and ADR-0011 reinforces it. The rationale below is preserved as the record of
+> why containers were chosen first.
 Date: 2026-08-30
 
 ## Context
