@@ -91,6 +91,32 @@ uv sync --frozen
 log "building web"
 NODE_OPTIONS="--max-old-space-size=1536" pnpm --filter @thedrop/web build
 
+# --- standalone asset copy --------------------------------------------------
+# `output: "standalone"` deliberately does NOT copy .next/static or public/ into the
+# standalone tree -- Next.js expects the deployer to do it, on the assumption a CDN
+# usually serves them. We serve them from the Node process, so without this step the
+# site returns HTML with every CSS file and JS chunk 404ing: unstyled, no theme
+# toggle, no admin login form, and error pages 500 because they cannot render.
+#
+# Verified against a real build: the standalone tree contained 0 static chunks while
+# the build produced 47.
+STANDALONE="$APP_DIR/apps/web/.next/standalone/apps/web"
+[[ -f "$STANDALONE/server.js" ]] || fail "standalone build missing at $STANDALONE/server.js"
+
+log "copying static assets into the standalone tree"
+rm -rf "$STANDALONE/.next/static"
+mkdir -p "$STANDALONE/.next"
+cp -r "$APP_DIR/apps/web/.next/static" "$STANDALONE/.next/static"
+
+if [[ -d "$APP_DIR/apps/web/public" ]]; then
+  rm -rf "$STANDALONE/public"
+  cp -r "$APP_DIR/apps/web/public" "$STANDALONE/public"
+fi
+
+CHUNKS=$(find "$STANDALONE/.next/static" -name '*.js' | wc -l)
+[[ "$CHUNKS" -gt 0 ]] || fail "no JS chunks copied into the standalone tree; the site would load unstyled"
+log "copied $CHUNKS static chunks"
+
 # ---------------------------------------------------------------- migrate
 log "running migrations"
 uv run alembic -c packages/database/alembic.ini upgrade head
@@ -160,7 +186,33 @@ ownership_gate() {
   return 0
 }
 
+# --- static asset gate ------------------------------------------------------
+# A 200 on the homepage says nothing about whether its CSS and JS actually load: the
+# HTML renders fine while every chunk 404s. This pulls a real asset URL out of the
+# rendered homepage and fetches it.
+asset_gate() {
+  local asset code
+  asset=$(curl -fsS --max-time 10 "http://127.0.0.1:3100/" \
+    | grep -oE '/_next/static/[^"]+\.(css|js)' | head -1)
+
+  if [[ -z "$asset" ]]; then
+    log "asset gate: found no /_next/static reference in the homepage HTML"
+    return 1
+  fi
+
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:3100$asset" || echo 000)
+  if [[ "$code" != "200" ]]; then
+    log "asset gate: $asset returned $code (want 200)"
+    log "            static assets were not copied into the standalone tree"
+    return 1
+  fi
+
+  log "health gate: static assets OK ($asset)"
+  return 0
+}
+
 ownership_gate || { log "route ownership gate failed"; rollback; }
+asset_gate     || { log "static asset gate failed"; rollback; }
 
 # ---------------------------------------------------------------- done
 echo "$TARGET_SHA" > "$LAST_GOOD_FILE"
