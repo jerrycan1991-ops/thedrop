@@ -148,17 +148,17 @@ def login(client: httpx.Client) -> str:
     if not session_id:
         raise LoginError("login succeeded but set no thedrop_session cookie")
 
-    # Do not let the session live in the client's cookie jar.
+    # Do not let the session live on in the client's cookie jar.
     #
     # httpx keeps a persistent jar per Client, and `client.request(..., cookies=None)`
-    # does NOT suppress it -- it merges. So a jar populated here rode along on every
-    # subsequent request, including the four `*_anonymous` admin endpoints whose entire
-    # purpose is to pin the 401. They returned 200 with a real admin body, which looked
-    # like an auth regression and, worse, meant no full run ever verified the guard.
+    # does NOT suppress it -- it merges. A jar populated here therefore rode along on
+    # every later request, including the four `*_anonymous` admin endpoints whose whole
+    # purpose is to pin the 401. They answered 200 with a real admin body: a full run
+    # reported a false auth regression, and the anonymous guard went unverified.
     #
     # The session is returned to the caller and attached explicitly per request in
-    # `fetch()`. Reading it off the RESPONSE above works whether or not the jar is
-    # populated, so clearing here costs nothing.
+    # `fetch()`. `response.cookies` is parsed from this response's Set-Cookie headers
+    # and is independent of the jar, so clearing afterwards loses nothing.
     client.cookies.clear()
     return session_id
 
@@ -261,14 +261,14 @@ def normalise(value: Any) -> Any:
 def fetch(
     client: httpx.Client, method: str, path: str, session_id: str | None = None
 ) -> dict[str, Any]:
-    # The session travels as an explicit header, never through the client's cookie jar
-    # (see `login`). `_logout` already used this form; this makes it the rule.
+    # The session travels as an explicit Cookie header, never through the client's
+    # jar (see `login`). `_logout` already used this form; this makes it the rule.
     if session_id:
         headers = {"Cookie": f"thedrop_session={session_id}"}
     else:
-        # Defence in depth: an anonymous capture must be genuinely anonymous even if
-        # some future edit repopulates the jar. Clearing costs one dict operation and
-        # removes a whole class of silently-passing auth checks.
+        # Defence in depth: an anonymous fetch must stay genuinely anonymous even if
+        # some future edit repopulates the jar. One dict operation removes an entire
+        # class of auth check that passes without testing anything.
         client.cookies.clear()
         headers = {}
 
