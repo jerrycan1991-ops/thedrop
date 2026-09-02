@@ -13,8 +13,14 @@ and the claims tables do not exist yet. That is the point. Adding it before the
 generator exists means the generator is born compliant; adding it afterwards would
 mean regenerating or retracting every article produced in between.
 
+Relinked onto a1c7e2b40f13 after the merge. This revision and the raw_articles
+revision were authored in parallel, both naming bf45495a0cae as their parent, so
+merging the two branches gave Alembic two heads and `upgrade head` refused to run.
+Neither had reached production, so the parent is corrected rather than papered over
+with a merge revision: a linear history is the one a future engineer can read.
+
 Revision ID: 258cd988cde6
-Revises: bf45495a0cae
+Revises: a1c7e2b40f13
 Create Date: 2026-09-01 22:06:25.465401
 
 """
@@ -27,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "258cd988cde6"
-down_revision: str | None = "bf45495a0cae"
+down_revision: str | None = "a1c7e2b40f13"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
