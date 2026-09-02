@@ -278,8 +278,40 @@ asset_gate() {
   log "health gate: static assets OK ($asset)"
 }
 
+# --- worker gate ------------------------------------------------------------
+# The HTTP gates above say nothing about the worker, and a dead worker is invisible
+# from outside: the site serves perfectly while nothing is ever ingested or published.
+# This shipped three green deploys in a row with the worker crash-looping on a missing
+# PYTHONPATH, so "all gates passed" now means the worker too.
+#
+# PM2 reports `online` the moment it spawns a process, so status alone is worthless for
+# something failing a second later. Sampling the restart counter twice is what
+# distinguishes running from restarting.
+worker_gate() {
+  local first second
+  first=$(pm2 jlist | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const a=JSON.parse(d).find(x=>x.name==="thedrop-worker");process.stdout.write(a?String(a.pm2_env.restart_time):"missing")})')
+
+  if [[ "$first" == "missing" ]]; then
+    log "worker gate: thedrop-worker is not registered with pm2"
+    return 1
+  fi
+
+  sleep 15
+  second=$(pm2 jlist | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const a=JSON.parse(d).find(x=>x.name==="thedrop-worker");process.stdout.write(a?String(a.pm2_env.restart_time):"missing")})')
+
+  if [[ "$second" != "$first" ]]; then
+    log "worker gate: thedrop-worker restarted $first -> $second in 15s; it is crash-looping"
+    log "             last lines of ${LOG_DIR:-$HOME/.local/state/thedrop/log}/thedrop-worker.err.log:"
+    tail -n 15 "${LOG_DIR:-$HOME/.local/state/thedrop/log}/thedrop-worker.err.log" >&2 2>/dev/null || true
+    return 1
+  fi
+
+  log "health gate: worker stable (no restarts in 15s)"
+}
+
 ownership_gate || { log "route ownership gate failed"; rollback; }
 asset_gate     || { log "static asset gate failed"; rollback; }
+worker_gate    || { log "worker gate failed"; rollback; }
 
 echo "$TARGET_SHA" > "$LAST_GOOD_FILE"
 log "migrations at head"

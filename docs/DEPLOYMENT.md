@@ -242,7 +242,7 @@ MemoryMax=700M
 WantedBy=multi-user.target
 ```
 
-`thedrop-worker.service` — same hardening; `ExecStart=/opt/thedrop/.venv/bin/celery -A app.worker.celery_app worker -B -Q ingest,maintain,publish -c 2 --loglevel=INFO`, `MemoryMax=700M`.
+`thedrop-worker.service` — same hardening; `ExecStart=/opt/thedrop/.venv/bin/celery -A app.celery_app worker -B -Q ingest,maintain,publish -c 2 --loglevel=INFO`, and `Environment=PYTHONPATH=/opt/thedrop/services/worker` (WorkingDirectory does not affect `sys.path` for a console script), `MemoryMax=700M`.
 
 > **Hard rule:** this unit embeds the beat scheduler (`-B`). It must never run more than one instance, or schedules fire twice. If a second worker is ever needed, split beat into its own unit first.
 

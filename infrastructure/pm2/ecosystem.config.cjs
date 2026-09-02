@@ -93,7 +93,13 @@ module.exports = {
       args: [
         "-lc",
         withEnv(
-          `cd ${APP}/services/worker && exec ${APP}/.venv/bin/celery -A app.celery_app ` +
+          // PYTHONPATH, not just cd. Python puts the CWD on sys.path for `-c` and `-m`
+          // but NOT for an installed console script, so `celery` resolved from its own
+          // bin directory and died with "The module app.celery_app was not found" on a
+          // loop. WorkingDirectory alone was never enough -- the systemd unit carried
+          // the same latent bug.
+          `cd ${APP}/services/worker && PYTHONPATH=${APP}/services/worker ` +
+            `exec ${APP}/.venv/bin/celery -A app.celery_app ` +
             `worker -B -Q ingest,maintain,publish --concurrency=2 --loglevel=INFO ` +
             `--without-gossip --without-mingle`,
         ),
