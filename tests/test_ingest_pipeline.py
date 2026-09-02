@@ -33,12 +33,15 @@ from thedrop_ingest.pipeline import (
     ADAPTER_REGISTRY,
     CIRCUIT_FAILURE_THRESHOLD,
     CIRCUIT_OPEN_DURATION,
+    FIRST_RUN_LOOKBACK,
+    POLL_OVERLAP,
     AdapterNotRegisteredError,
     _circuit_allows,
     _record_failure,
     _record_success,
     band_predicates,
     build_adapter,
+    window_start,
 )
 from thedrop_ingest.providers import ProviderError, ProviderPage
 from thedrop_ingest.providers.rss import RSSProvider
@@ -237,6 +240,40 @@ def test_error_text_is_truncated_before_storage() -> None:
     _record_failure(provider, "x" * 5000, NOW)
 
     assert len(provider.last_error) <= 2000
+
+
+# ------------------------------------------------------------------ poll window
+
+
+def test_first_poll_looks_back_a_bounded_window() -> None:
+    """Enough to have something to ingest, not so much that a first poll imports an
+    archive."""
+    assert window_start(None, NOW) == NOW - FIRST_RUN_LOOKBACK
+
+
+def test_subsequent_polls_overlap_the_previous_one() -> None:
+    """Resuming exactly at `last_success_at` loses articles, permanently and silently.
+
+    Feeds lag publication. An item stamped 10:00 may not appear until 10:05; a poll at
+    10:02 that resumes from 10:02 will judge it too old at 10:07 and never ingest it.
+    Observed live: the second poll of a working feed returned
+    `fetched: 0, skipped: 10` -- every item filtered out before dedup ever saw it.
+    """
+    last = NOW - timedelta(minutes=15)
+
+    assert window_start(last, NOW) == last - POLL_OVERLAP
+    assert window_start(last, NOW) < last
+
+
+def test_overlap_is_wide_enough_to_cover_realistic_feed_lag() -> None:
+    """A few minutes would not do. Feeds and CDNs can be hours behind."""
+    assert timedelta(hours=1) <= POLL_OVERLAP
+
+
+def test_window_start_is_timezone_aware_utc() -> None:
+    """A naive datetime compared against an aware one raises, mid-poll."""
+    assert window_start(None, NOW).tzinfo is not None
+    assert window_start(NOW - timedelta(hours=1), NOW).tzinfo is not None
 
 
 # ------------------------------------------------------------------ source policy

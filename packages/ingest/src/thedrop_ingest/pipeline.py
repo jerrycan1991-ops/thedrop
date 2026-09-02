@@ -37,6 +37,19 @@ CIRCUIT_OPEN_DURATION = timedelta(minutes=15)
 #: a long-lived feed does not import a decade of archive.
 FIRST_RUN_LOOKBACK = timedelta(days=2)
 
+#: How far BEFORE the last success to re-examine on every subsequent poll.
+#:
+#: Without this, `since` is exactly `last_success_at` and articles are silently and
+#: permanently lost. Feeds lag publication: an item stamped 10:00 may not appear in the
+#: feed until 10:05. Poll at 10:02 and `since` becomes 10:02, so at 10:07 that article
+#: is judged too old and is never ingested -- no error, no skip anyone would notice,
+#: just a story that never existed as far as the pipeline is concerned.
+#:
+#: Re-examining is close to free precisely because the dedup cascade exists: a repeat
+#: costs one indexed lookup on `url_hash` and is recorded as an exact duplicate. The
+#: overlap is what that guard is FOR.
+POLL_OVERLAP = timedelta(hours=6)
+
 #: Candidate ceiling for the SimHash comparison. A band match is a prefilter, not a
 #: guarantee; without a cap a popular band could pull thousands of rows into memory.
 SIMHASH_CANDIDATE_LIMIT = 500
@@ -265,6 +278,17 @@ def _record_failure(provider: Provider, error: str, now: datetime) -> None:
         provider.circuit_opened_at = now
 
 
+def window_start(last_success_at: datetime | None, now: datetime) -> datetime:
+    """The `since` passed to an adapter.
+
+    Deliberately overlaps the previous poll rather than resuming exactly where it
+    stopped -- see POLL_OVERLAP for why resuming exactly loses articles.
+    """
+    if last_success_at is None:
+        return now - FIRST_RUN_LOOKBACK
+    return last_success_at.astimezone(UTC) - POLL_OVERLAP
+
+
 def poll(db: Session, provider_slug: str) -> dict[str, object]:
     """Poll one provider and store what it returns.
 
@@ -282,7 +306,7 @@ def poll(db: Session, provider_slug: str) -> dict[str, object]:
     if not _circuit_allows(provider, now):
         return {"provider": provider_slug, "status": "circuit_open"}
 
-    since = (provider.last_success_at or now - FIRST_RUN_LOOKBACK).astimezone(UTC)
+    since = window_start(provider.last_success_at, now)
 
     try:
         adapter = build_adapter(provider)
