@@ -15,7 +15,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
-from sqlalchemy import or_, select
+from sqlalchemy import BigInteger, Integer, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from thedrop_database.enums import CircuitState, DedupStatus, IngestStatus, SourceType
@@ -140,6 +140,25 @@ def classify_duplicate(db: Session, item: NormalizedItem) -> tuple[str, int | No
     return DedupStatus.UNIQUE, None
 
 
+def band_predicates(fingerprint: int) -> list[object]:
+    """SQL for "shares at least one 16-bit band with `fingerprint`".
+
+    The shift amount is bound as INTEGER, deliberately. Postgres defines the operator
+    as `bigint >> integer`; letting SQLAlchemy infer BIGINT from the column produces
+    `bigint >> bigint`, which does not exist and fails at execution with
+    "operator does not exist". That is invisible in Python and only appears against a
+    real server, which is why `test_band_predicates_compile_to_valid_postgres` asserts
+    on the compiled SQL instead.
+    """
+    return [
+        RawArticle.simhash.op(">>")(literal(i * 16, Integer)).op("&")(
+            literal(0xFFFF, BigInteger)
+        )
+        == literal(band, BigInteger)
+        for i, band in enumerate(bands(fingerprint))
+    ]
+
+
 def _nearest_by_simhash(db: Session, fingerprint: int) -> int | None:
     """Candidates share at least one 16-bit band, then are checked by Hamming distance.
 
@@ -147,15 +166,9 @@ def _nearest_by_simhash(db: Session, fingerprint: int) -> int | None:
     below the band count (pigeonhole), so this is an index-friendly narrowing rather
     than an approximation.
     """
-    wanted = bands(fingerprint)
-    band_predicates = [
-        RawArticle.simhash.op(">>")(i * 16).op("&")(0xFFFF) == band
-        for i, band in enumerate(wanted)
-    ]
-
     candidates = db.execute(
         select(RawArticle.id, RawArticle.simhash)
-        .where(RawArticle.simhash.is_not(None), or_(*band_predicates))
+        .where(RawArticle.simhash.is_not(None), or_(*band_predicates(fingerprint)))
         .order_by(RawArticle.id.desc())
         .limit(SIMHASH_CANDIDATE_LIMIT)
     ).all()

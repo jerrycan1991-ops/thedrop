@@ -25,7 +25,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import or_, select
+from sqlalchemy.dialects import postgresql
 from thedrop_database.enums import CircuitState, SourceType
+from thedrop_database.models import RawArticle
 from thedrop_ingest.pipeline import (
     ADAPTER_REGISTRY,
     CIRCUIT_FAILURE_THRESHOLD,
@@ -34,6 +37,7 @@ from thedrop_ingest.pipeline import (
     _circuit_allows,
     _record_failure,
     _record_success,
+    band_predicates,
     build_adapter,
 )
 from thedrop_ingest.providers import ProviderError, ProviderPage
@@ -99,6 +103,58 @@ def test_every_registered_value_is_the_class_it_names() -> None:
 def test_missing_feed_url_is_a_configuration_error() -> None:
     with pytest.raises(ProviderError, match="feed_url"):
         build_adapter(FakeProvider(config={}))
+
+
+# ------------------------------------------------------------------ generated SQL
+
+
+def _shift_bind_types(fingerprint: int = 0x1234_5678_9ABC_DEF0) -> set[str]:
+    """The SQL types SQLAlchemy will bind the shift amounts as.
+
+    Not the compiled SQL string: with `literal_binds` the values are inlined and both
+    the correct and the broken form render identically. The `::BIGINT` in the real
+    error came from psycopg at execution time, not from the compiler. The bind
+    parameter's type is the only place the difference is visible before it reaches a
+    server -- checked while writing this test, because the first version of it passed
+    against the bug.
+    """
+    statement = select(RawArticle.id).where(or_(*band_predicates(fingerprint)))
+    compiled = statement.compile(dialect=postgresql.dialect())
+    shifts = {0, 16, 32, 48}
+    return {
+        type(bind.type).__name__
+        for bind in compiled.binds.values()
+        if isinstance(bind.value, int) and bind.value in shifts
+    }
+
+
+def test_shift_amount_is_bound_as_integer_not_bigint() -> None:
+    """Postgres defines the operator as `bigint >> integer`.
+
+    Letting SQLAlchemy infer the type from the column gives `bigint >> bigint`, which
+    does not exist:
+
+        operator does not exist: bigint >> bigint
+
+    It is invisible in Python, invisible in the compiled SQL, and fails on the first
+    real poll against a live server -- which is exactly what happened.
+    """
+    assert _shift_bind_types() == {"Integer"}
+
+
+def test_band_predicates_cover_every_band() -> None:
+    """One predicate per band, or the pigeonhole guarantee silently stops holding."""
+    from thedrop_ingest.dedup import BAND_COUNT
+
+    assert len(band_predicates(0x1234_5678_9ABC_DEF0)) == BAND_COUNT
+
+
+def test_band_predicates_mask_to_sixteen_bits() -> None:
+    statement = select(RawArticle.id).where(or_(*band_predicates(0x1234_5678_9ABC_DEF0)))
+    sql = str(
+        statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "65535" in sql
 
 
 # ------------------------------------------------------------------ circuit breaker
