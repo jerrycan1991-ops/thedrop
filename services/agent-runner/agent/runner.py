@@ -90,11 +90,14 @@ class Runner:
     # ------------------------------------------------------------------ signals
     def install_signal_handlers(self) -> None:
         def handle(signum: int, _frame: FrameType | None) -> None:
-            # Second signal means the operator is impatient; let the default handler
-            # take it so Ctrl+C twice always works.
             if self.stop_event.is_set():
+                # Second signal: the operator is not waiting for a 60-second handler to
+                # finish. Restore the default handler AND raise now -- merely restoring
+                # it would mean this press did nothing and a THIRD was needed, which is
+                # indistinguishable from a hung process.
                 signal.signal(signum, signal.SIG_DFL)
-                return
+                logger.warning("second signal; exiting immediately, lease will expire")
+                raise KeyboardInterrupt
             logger.info("shutdown requested; finishing current job then exiting")
             self.stop_event.set()
 

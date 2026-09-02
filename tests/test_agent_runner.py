@@ -334,6 +334,30 @@ def test_stop_event_ends_the_loop(api: FakeApi, client: WorkerClient) -> None:
         timer.cancel()
 
 
+def test_second_interrupt_exits_immediately(api: FakeApi, client: WorkerClient) -> None:
+    """One Ctrl+C drains; the next must exit on that press, not the one after.
+
+    The first version only restored the default handler and returned, so a second press
+    did nothing and a third was needed -- which looks exactly like a hung process to
+    whoever is pressing it.
+    """
+    import signal
+
+    runner = make_runner(client)
+    runner.install_signal_handlers()
+    handler = signal.getsignal(signal.SIGINT)
+    assert callable(handler)
+
+    try:
+        handler(signal.SIGINT, None)
+        assert runner.stop_event.is_set()
+
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+    finally:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
 def test_heartbeat_reports_the_advertised_handlers(api: FakeApi, client: WorkerClient) -> None:
     runner = make_runner(client)
 
