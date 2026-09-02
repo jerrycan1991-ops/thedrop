@@ -76,9 +76,27 @@ foreach ($name in @("THEDROP_API_URL", "WORKER_TOKEN", "WORKER_NAME")) {
 Set-Location $RepoRoot
 Write-Log "starting agent-runner from $RepoRoot"
 
-# 2>&1 so a traceback reaches the log rather than being discarded with stderr.
+# Python BLOCK-buffers stdout when it is a pipe rather than a terminal, so without this
+# the runner's output sits in a buffer instead of reaching the log. A process that logs
+# every 30 seconds would show nothing for hours and look dead -- which is exactly how it
+# presented the first time this ran.
+$env:PYTHONUNBUFFERED = "1"
+
+# `2>&1` is needed so a traceback reaches the log rather than vanishing with stderr --
+# and Python logging writes to stderr, so this is not just the error path.
+#
+# But in Windows PowerShell 5.1, redirecting a NATIVE command's stderr wraps every line
+# in a NativeCommandError. Under `$ErrorActionPreference = "Stop"` that first log line
+# becomes a TERMINATING error and kills this script before the runner has done anything.
+# Observed: the task exited 1, the log held only "starting agent-runner", and the
+# runner itself was fine.
+#
+# Relaxed only around the invocation. Everything above still fails hard.
+$ErrorActionPreference = "Continue"
+
 & uv run python -m agent 2>&1 | ForEach-Object { Write-Log $_ }
 $code = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
 
 Write-Log "agent-runner exited with code $code"
 
