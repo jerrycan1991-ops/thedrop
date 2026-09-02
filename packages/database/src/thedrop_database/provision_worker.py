@@ -22,6 +22,7 @@ import logging
 import secrets
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -55,7 +56,7 @@ def _digest(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
-def provision(name: str, rotate: bool) -> int:
+def provision(name: str, rotate: bool, write_to: str | None = None) -> int:
     token = secrets.token_urlsafe(TOKEN_BYTES)
     now = datetime.now(UTC)
 
@@ -93,6 +94,17 @@ def provision(name: str, rotate: bool) -> int:
             )
             return 1
 
+    if write_to is not None:
+        # Written with restrictive permissions BEFORE any content, so the secret is
+        # never briefly world-readable.
+        path = Path(write_to)
+        path.touch(mode=0o600, exist_ok=True)
+        path.chmod(0o600)
+        path.write_text(token, encoding="utf-8")
+        logger.info("worker %s: token written to %s (not displayed)", action, path)
+        logger.info("delete it once the runner has picked it up")
+        return 0
+
     # Printed once, outside the transaction, and never logged anywhere else.
     print()
     print(f"worker {action}: {name}")
@@ -118,8 +130,18 @@ def main() -> int:
         action="store_true",
         help="Issue a new token for an existing worker, keeping the old one valid briefly.",
     )
+    parser.add_argument(
+        "--write-to",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write the token to PATH (mode 0600) instead of printing it. Use this when "
+            "the terminal is shared or recorded: the token then moves machine-to-machine "
+            "over scp/ssh without ever appearing on a screen."
+        ),
+    )
     args = parser.parse_args()
-    return provision(args.name, args.rotate)
+    return provision(args.name, args.rotate, args.write_to)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,20 @@ To rotate later — the old token keeps working for 24 h, so this is not an outa
 python -m thedrop_database.provision_worker --name desktop-4070 --rotate
 ```
 
+**If the terminal is shared or recorded**, write the token to a file instead of printing
+it, then move it machine-to-machine without it ever appearing on a screen:
+
+```bash
+python -m thedrop_database.provision_worker --name desktop-4070 --rotate --write-to ~/.config/thedrop/worker-token
+```
+
+```bash
+$env:WORKER_TOKEN = (ssh user@vps "cat ~/.config/thedrop/worker-token").Trim()
+```
+
+Delete the file once the runner has it. Retyping a 43-character token by hand across two
+machines does not survive contact with reality.
+
 ## Run it — on the desktop
 
 ```bash
@@ -56,6 +70,18 @@ python -m agent
 | `RUNNER_IDLE_POLL_SECONDS` | `10` | There is no server-side long poll |
 | `RUNNER_LEASE_SECONDS` | `900` | Heartbeats extend held leases, so this only needs to outlast one handler run |
 | `RUNNER_MAX_JOBS` | `1` | Jobs claimed per poll |
+
+## Proving the round trip
+
+With the runner running, queue a no-op from the VPS and watch it flow:
+
+```bash
+python -m thedrop_database.enqueue_job --type noop --payload '{"sleep_seconds": 3}'
+```
+
+The runner logs `claimed job` → `noop handler ran` → `completed job` within one poll
+interval. That exercises claim, dispatch, lease extension and completion without a
+provider, a model or the GPU being involved.
 
 ## Adding a handler
 
