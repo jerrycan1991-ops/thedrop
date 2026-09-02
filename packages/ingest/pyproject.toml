@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Normalization and cheap deduplication for THE DROP - pure functions, no I/O"
 requires-python = ">=3.12,<3.14"
 
-# Stdlib only, deliberately.
+# httpx and nothing else, deliberately.
 #
 # This is the VPS half of ingestion (PIPELINE.md 3-4): canonical URLs, hostile-text
 # handling, injection scanning, SimHash. It runs on a 4-core box shared with a hosting
@@ -15,7 +15,14 @@ requires-python = ">=3.12,<3.14"
 # Celery or database dependency and is useful anywhere, and services/api and
 # services/worker BOTH ship a top-level `app` package, so anything importable from
 # inside one of them collides with the other the moment a test imports both.
-dependencies = []
+#
+# Feed parsing uses stdlib xml.etree rather than feedparser: RSS and Atom are simple
+# enough that a dependency buys little, and this box has 8GB shared with a hosting
+# panel. See providers/rss.py for how the XML attack surface is closed without
+# defusedxml.
+dependencies = [
+    "httpx>=0.28",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -1113,6 +1113,12 @@ requires-dist = [
 name = "thedrop-ingest"
 version = "0.1.0"
 source = { editable = "packages/ingest" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "thedrop-worker"
