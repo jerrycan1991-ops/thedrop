@@ -143,6 +143,33 @@ def test_items_older_than_since_are_skipped_with_a_reason() -> None:
     assert all("older than" in reason for _url, reason in page.skipped)
 
 
+def test_cdata_wrapped_links_and_titles_are_read() -> None:
+    """Real feeds use CDATA; the fixtures above did not, so this was unverified.
+
+    Found by pointing the adapter at federalreserve.gov, which wraps every link and
+    title in CDATA. A parser that returned the literal "<![CDATA[...]]>" would produce
+    a canonical URL that is not a URL, and the failure would look like a dedup problem.
+    """
+    feed = (
+        '<?xml version="1.0"?><rss version="2.0"><channel><item>'
+        "<title><![CDATA[Fed issues enforcement action]]></title>"
+        "<link><![CDATA[https://www.federalreserve.gov/news/a.htm]]></link>"
+        "<pubDate>Tue, 01 Sep 2026 18:30:00 GMT</pubDate>"
+        "</item></channel></rss>"
+    )
+    page = provider_for(feed).fetch(SINCE)
+
+    assert page.items[0].title == "Fed issues enforcement action"
+    assert page.items[0].canonical_url == "https://www.federalreserve.gov/news/a.htm"
+
+
+def test_byte_order_mark_before_the_declaration_is_tolerated() -> None:
+    """federalreserve.gov emits a UTF-8 BOM. Several real feeds do."""
+    page = provider_for("﻿" + RSS_FEED).fetch(SINCE)
+
+    assert len(page.items) == 2
+
+
 # ------------------------------------------------------------------ hostile feeds
 
 
