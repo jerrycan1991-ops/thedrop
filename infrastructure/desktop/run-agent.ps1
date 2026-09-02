@@ -94,7 +94,11 @@ $env:PYTHONUNBUFFERED = "1"
 # Relaxed only around the invocation. Everything above still fails hard.
 $ErrorActionPreference = "Continue"
 
-& uv run python -m agent 2>&1 | ForEach-Object { Write-Log $_ }
+# `--group desktop` is load-bearing, not decoration. The runner is a workspace member
+# that nothing depends on, so a plain `uv sync` resolves it OUT of the shared venv and
+# the next start fails with "No module named agent". The group installs it on demand
+# and keeps it off the VPS, where a desktop runner has no business being (ADR-0001).
+& uv run --group desktop python -m agent 2>&1 | ForEach-Object { Write-Log $_ }
 $code = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 

@@ -1003,6 +1003,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+desktop = [
+    { name = "thedrop-agent-runner" },
+]
 dev = [
     { name = "httpx" },
     { name = "mypy" },
@@ -1022,6 +1025,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+desktop = [{ name = "thedrop-agent-runner", editable = "services/agent-runner" }]
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", specifier = ">=1.13" },

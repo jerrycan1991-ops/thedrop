@@ -44,7 +44,7 @@ machines does not survive contact with reality.
 ```bash
 export THEDROP_API_URL=https://thedrop.channel
 export WORKER_TOKEN=<the token printed above>
-python -m agent --check
+uv run --group desktop python -m agent --check
 ```
 
 `--check` authenticates, prints what the server thinks this worker is, and exits. Do
@@ -54,7 +54,7 @@ a one-shot command beats finding out from a runner that has already claimed work
 Then:
 
 ```bash
-python -m agent
+uv run --group desktop python -m agent
 ```
 
 `/admin` shows `AI DESKTOP: ONLINE` within one heartbeat.

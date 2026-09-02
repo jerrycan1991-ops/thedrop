@@ -33,6 +33,15 @@ thedrop-worker = { workspace = true }
 thedrop-agent-runner = { workspace = true }
 
 [dependency-groups]
+# Desktop-only. The runner is a workspace MEMBER but nothing depends on it, and
+# `uv sync` installs dependencies rather than members -- so it was resolved out of the
+# venv by a later sync and the scheduled task died with "No module named agent".
+#
+# A group rather than a root dependency: adding it there would install the desktop
+# runner on the VPS, which contradicts the whole point of ADR-0001. Install it with
+# `uv sync --group desktop`, or let `uv run --group desktop` do it on demand.
+desktop = ["thedrop-agent-runner"]
+
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
