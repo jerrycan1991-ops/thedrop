@@ -31,6 +31,7 @@ from thedrop_ingest.dedup import simhash
 from thedrop_ingest.normalize import NormalizedItem
 from thedrop_ingest.pipeline import (
     classify_duplicate,
+    due_providers,
     resolve_source,
     store_item,
 )
@@ -309,3 +310,72 @@ def test_poll_window_overlap_would_have_caught_the_lost_articles(
     published_just_before_that_poll = last_poll - timedelta(minutes=2)
 
     assert window_start(last_poll, now) <= published_just_before_that_poll
+
+
+# ------------------------------------------------------------------ due providers
+
+
+def _pytest_provider(db: Session, **kwargs: object) -> Provider:
+    provider = Provider(
+        slug="pytest-due-provider",
+        display_name="pytest due",
+        adapter_class="thedrop_ingest.providers.rss.RSSProvider",
+        config={"feed_url": f"https://{TEST_DOMAIN}/feed.xml"},
+        enabled=True,
+        poll_interval_minutes=15,
+    )
+    for key, value in kwargs.items():
+        setattr(provider, key, value)
+    db.add(provider)
+    db.flush()
+    return provider
+
+
+def test_a_never_polled_provider_is_due(db: Session) -> None:
+    _pytest_provider(db)
+
+    assert "pytest-due-provider" in due_providers(db)
+
+
+def test_a_recently_polled_provider_is_not_due(db: Session) -> None:
+    _pytest_provider(db, last_success_at=datetime.now(UTC) - timedelta(minutes=1))
+
+    assert "pytest-due-provider" not in due_providers(db)
+
+
+def test_a_provider_past_its_interval_is_due(db: Session) -> None:
+    _pytest_provider(db, last_success_at=datetime.now(UTC) - timedelta(minutes=20))
+
+    assert "pytest-due-provider" in due_providers(db)
+
+
+def test_a_disabled_provider_is_never_due(db: Session) -> None:
+    """Disabling must actually stop polling, not merely stop storing."""
+    _pytest_provider(db, enabled=False, last_success_at=None)
+
+    assert "pytest-due-provider" not in due_providers(db)
+
+
+def test_a_recently_failed_provider_is_not_immediately_retried(db: Session) -> None:
+    """The regression for hammering an unhappy feed.
+
+    A provider that errors never updates `last_success_at`. Keying due-ness on success
+    alone would make it look permanently overdue and re-dispatch it every 60s until the
+    circuit breaker trips.
+    """
+    _pytest_provider(db, last_success_at=None, last_error_at=datetime.now(UTC))
+
+    assert "pytest-due-provider" not in due_providers(db)
+
+
+def test_due_providers_returns_slugs_that_poll_can_actually_use(db: Session) -> None:
+    """A slug the dispatcher emits must resolve, or every tick queues a no-op."""
+    from thedrop_ingest.pipeline import poll
+
+    _pytest_provider(db, enabled=True)
+    slugs = due_providers(db)
+
+    assert "pytest-due-provider" in slugs
+    # Not "unknown_provider": the slug round-trips. The feed is unreachable, so an
+    # error status here is the expected outcome, not a failure of the dispatcher.
+    assert poll(db, "pytest-due-provider")["status"] in {"ok", "error"}

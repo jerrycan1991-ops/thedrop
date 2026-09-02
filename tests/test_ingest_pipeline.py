@@ -41,6 +41,7 @@ from thedrop_ingest.pipeline import (
     _record_success,
     band_predicates,
     build_adapter,
+    next_due_at,
     window_start,
 )
 from thedrop_ingest.providers import ProviderError, ProviderPage
@@ -64,6 +65,7 @@ class FakeProvider:
         self.last_error: str | None = None
         self.last_error_at: datetime | None = None
         self.cursor: str | None = None
+        self.poll_interval_minutes = 15
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -240,6 +242,48 @@ def test_error_text_is_truncated_before_storage() -> None:
     _record_failure(provider, "x" * 5000, NOW)
 
     assert len(provider.last_error) <= 2000
+
+
+# ------------------------------------------------------------------ due-ness
+
+
+def test_a_provider_that_has_never_run_is_due_immediately() -> None:
+    assert next_due_at(FakeProvider(poll_interval_minutes=15)) is None
+
+
+def test_a_recent_success_pushes_the_next_attempt_out() -> None:
+    provider = FakeProvider(last_success_at=NOW, poll_interval_minutes=15)
+
+    assert next_due_at(provider) == NOW + timedelta(minutes=15)
+
+
+def test_a_failure_also_pushes_the_next_attempt_out() -> None:
+    """Keying on last success alone hammers a failing feed.
+
+    Without this, a provider that errors never updates `last_success_at`, looks
+    permanently overdue, and is re-dispatched every 60s -- four solid minutes of
+    retries against an unhappy publisher before the circuit breaker trips.
+    """
+    provider = FakeProvider(last_success_at=None, last_error_at=NOW, poll_interval_minutes=15)
+
+    assert next_due_at(provider) == NOW + timedelta(minutes=15)
+
+
+def test_the_most_recent_attempt_wins_whichever_it_was() -> None:
+    provider = FakeProvider(
+        last_success_at=NOW - timedelta(hours=2),
+        last_error_at=NOW,
+        poll_interval_minutes=15,
+    )
+
+    assert next_due_at(provider) == NOW + timedelta(minutes=15)
+
+
+def test_the_interval_comes_from_the_row_not_a_constant() -> None:
+    """Changing a feed's cadence must be a row update, not a redeploy."""
+    for minutes in (5, 15, 60):
+        provider = FakeProvider(last_success_at=NOW, poll_interval_minutes=minutes)
+        assert next_due_at(provider) == NOW + timedelta(minutes=minutes)
 
 
 # ------------------------------------------------------------------ poll window

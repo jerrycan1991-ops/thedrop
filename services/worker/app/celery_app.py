@@ -52,6 +52,13 @@ celery_app.conf.update(
 )
 
 celery_app.conf.beat_schedule = {
+    # Ingestion's heartbeat. Beat stays a fixed 60s tick and the decision about which
+    # providers are due lives in a query, so changing a feed's cadence is a row update
+    # rather than a redeploy.
+    "dispatch-due-providers": {
+        "task": "app.tasks.ingest.dispatch_due_providers",
+        "schedule": 60.0,
+    },
     # Returns jobs abandoned by an offline desktop to the queue. The single most
     # important periodic task: without it, a power cut on the desktop strands work.
     "reap-expired-job-leases": {

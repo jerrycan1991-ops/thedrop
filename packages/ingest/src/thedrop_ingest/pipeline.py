@@ -278,6 +278,39 @@ def _record_failure(provider: Provider, error: str, now: datetime) -> None:
         provider.circuit_opened_at = now
 
 
+def next_due_at(provider: Provider) -> datetime | None:
+    """When this provider may next be polled, or None if it never has been.
+
+    Keyed on the last ATTEMPT, not the last success. Using `last_success_at` alone
+    means a failing provider looks permanently overdue and is re-dispatched on every
+    tick -- four minutes of hammering a feed that is already unhappy before the circuit
+    breaker trips. A failure has to push the next attempt out just as a success does.
+    """
+    last_attempt = max(
+        (t for t in (provider.last_success_at, provider.last_error_at) if t is not None),
+        default=None,
+    )
+    if last_attempt is None:
+        return None
+    return last_attempt.astimezone(UTC) + timedelta(minutes=provider.poll_interval_minutes)
+
+
+def due_providers(db: Session, now: datetime | None = None) -> list[str]:
+    """Slugs of enabled providers whose poll interval has elapsed.
+
+    Circuit state is deliberately NOT filtered here. `poll` already declines an open
+    circuit in a single cheap check, and doing it in one place means the breaker cannot
+    be accidentally bypassed by a second caller that forgot.
+    """
+    now = now or datetime.now(UTC)
+    due = []
+    for provider in db.scalars(select(Provider).where(Provider.enabled.is_(True))):
+        due_at = next_due_at(provider)
+        if due_at is None or due_at <= now:
+            due.append(provider.slug)
+    return due
+
+
 def window_start(last_success_at: datetime | None, now: datetime) -> datetime:
     """The `since` passed to an adapter.
 
