@@ -15,6 +15,7 @@ dependencies = [
 members = [
     "packages/config",
     "packages/database",
+    "packages/ingest",
     "services/api",
     "services/worker",
     # Runs on the desktop, not the VPS. Kept in the workspace so it shares the
@@ -26,6 +27,7 @@ members = [
 [tool.uv.sources]
 thedrop-config = { workspace = true }
 thedrop-database = { workspace = true }
+thedrop-ingest = { workspace = true }
 thedrop-api = { workspace = true }
 thedrop-worker = { workspace = true }
 thedrop-agent-runner = { workspace = true }

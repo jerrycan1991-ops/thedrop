@@ -9,6 +9,7 @@ members = [
     "thedrop-api",
     "thedrop-config",
     "thedrop-database",
+    "thedrop-ingest",
     "thedrop-worker",
 ]
 
@@ -1109,6 +1110,11 @@ requires-dist = [
 ]
 
 [[package]]
+name = "thedrop-ingest"
+version = "0.1.0"
+source = { editable = "packages/ingest" }
+
+[[package]]
 name = "thedrop-worker"
 version = "0.1.0"
 source = { editable = "services/worker" }
@@ -1118,6 +1124,7 @@ dependencies = [
     { name = "redis" },
     { name = "thedrop-config" },
     { name = "thedrop-database" },
+    { name = "thedrop-ingest" },
 ]
 
 [package.metadata]
@@ -1127,6 +1134,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.2" },
     { name = "thedrop-config", editable = "packages/config" },
     { name = "thedrop-database", editable = "packages/database" },
+    { name = "thedrop-ingest", editable = "packages/ingest" },
 ]
 
 [[package]]

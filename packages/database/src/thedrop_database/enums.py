@@ -63,6 +63,29 @@ class SourceType(StrEnum):
     UNKNOWN = "unknown"
 
 
+class DedupStatus(StrEnum):
+    """Where a raw article sits in the cheap-dedup cascade (PIPELINE.md §4).
+
+    `pending` until the cascade runs; the three terminal values record which check
+    caught it, because "why was this dropped" is the first question asked when a story
+    the operator expected never appears.
+    """
+
+    PENDING = "pending"
+    UNIQUE = "unique"
+    NEAR_DUPLICATE = "near_duplicate"
+    EXACT_DUPLICATE = "exact_duplicate"
+
+
+class IngestStatus(StrEnum):
+    """How far an ingested item has travelled through the pipeline."""
+
+    RAW = "raw"
+    NORMALIZED = "normalized"
+    CLUSTERED = "clustered"
+    REJECTED = "rejected"
+
+
 class CircuitState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
