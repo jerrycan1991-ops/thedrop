@@ -2,6 +2,10 @@
 
 Target: Ubuntu 24.04 VPS, 4 vCPU / 8 GB RAM, existing hosting-panel nginx already proxying `https://thedrop.channel` → `127.0.0.1:3100`.
 
+> **No root on the host?** §3–§6 assume it throughout. If the account you have cannot
+> `sudo`, jump to [§12](#12-unprivileged-deployment-no-root-on-the-host) — that is the
+> path `thedrop.channel` currently runs on, and ADR-0012 records what it costs.
+
 **Standing constraint: we do not hand-edit nginx.** Phase 1 requires zero nginx changes. If a change ever becomes genuinely necessary, it is made *through the hosting panel*, documented here, and is reversible (§7).
 
 ---
@@ -408,3 +412,239 @@ A backup that has never been restored is not a backup.
 > declares `Requires=postgresql.service thedrop-redis.service` (ADR-0011).
 
 None are needed to complete Phase 1 except the first four.
+
+
+---
+
+## 12. Unprivileged deployment (no root on the host)
+
+Everything above assumes root. This section is the path taken when the host refuses it,
+and it is what `thedrop.channel` currently runs on. The decision and its costs are in
+[ADR-0012](adr/0012-unprivileged-deployment.md); this is the procedure.
+
+**Read §1–§11 first.** This section replaces §3.3, §4, §5 and §6 and leaves the rest
+intact.
+
+### 12.1 Confirm root really is unavailable
+
+Do not adopt this path to avoid a conversation with whoever owns the box. Confirm it:
+
+```bash
+sudo -l; su -; getent group sudo
+```
+
+On a CloudPanel site user you will see `sudo` limited to `clpctlWrapper`, `su` denied at
+the *binary* (`/usr/bin/su: Permission denied` — the execute bit is stripped, it is not a
+password failure), and an empty `sudo` group meaning no admin account exists to ask for.
+There is no escalation path from the host, and none should be sought. Root is reachable
+only through the provider's out-of-band console.
+
+### 12.2 What replaces what
+
+| §  | Privileged | Unprivileged |
+|---|---|---|
+| 3.6 | `/opt/thedrop`, `/etc/thedrop` | `~/thedrop`, `~/.config/thedrop`, `~/.local/state/thedrop` |
+| 4.1 | PostgreSQL from apt | managed Postgres off-box |
+| 4.2 | `thedrop-redis.service` | same Redis, run by PM2 on 6380 |
+| 5 | systemd units | `infrastructure/pm2/ecosystem.config.cjs` |
+| 6 | `deploy.sh` | `deploy-userspace.sh` |
+| 9 | `pg_dump` on the host | provider snapshot, asserted with `--backup-verified` |
+
+Prerequisites already present on a CloudPanel host: Node (via nvm), Python 3.12, `uv`,
+`pnpm`, `redis-server`, PM2, and a writable crontab. Verify Node's major matches
+`.tool-versions` — the deploy script aborts otherwise.
+
+### 12.3 Managed PostgreSQL — pick the region by measurement
+
+**Region is the single highest-impact choice here.** Every query becomes a network round
+trip on the render path, and TTFB feeds Core Web Vitals and Google News eligibility.
+
+Measure before creating the project — this is TCP handshake time to each region:
+
+```bash
+for r in us-east-1 us-east-2 us-west-2 eu-central-1 eu-west-2 ap-south-1 ap-southeast-1; do printf '%-16s ' $r; curl -sS -o /dev/null -w '%{time_connect}s\n' --max-time 6 https://ec2.$r.amazonaws.com; done
+```
+
+Create the project in the lowest one. Providers cannot move a project between regions, so
+getting this wrong costs a data migration later. For reference, the first attempt here
+landed in Ohio at **152 ms/query**; Frankfurt measured **12 ms**. A page issuing five
+sequential queries pays 760 ms versus 60 ms.
+
+Verify pgvector is available before going further — it is checked by the deploy script,
+but finding out now is cheaper.
+
+### 12.4 The env file, and four traps
+
+Config lives at `~/.config/thedrop/thedrop.env`, mode 0600. Start from `.env.example`.
+
+All four of the following cost real time during the first deployment. They are listed in
+the order they bite.
+
+**1. Replace whole values, never fragments.** Pasting a connection string over the
+`CHANGE_ME` inside `DATABASE_URL=postgresql+psycopg://thedrop:CHANGE_ME@127.0.0.1:5432/thedrop`
+leaves the surrounding scheme and host attached, producing
+`postgresql+psycopg://thedrop:postgresql://user:pass@real-host/db@127.0.0.1:5432/thedrop`.
+It fails as `failed to resolve host 'thedrop'`. Rewrite the line:
+
+```bash
+read -rs -p "Paste the connection string: " U; echo; sed -i '/^DATABASE_URL=/d' ~/.config/thedrop/thedrop.env && printf 'DATABASE_URL="%s"\n' "$(echo "$U" | sed 's|^postgresql://|postgresql+psycopg://|')" >> ~/.config/thedrop/thedrop.env && unset U
+```
+
+**2. Quote anything containing `&`.** Managed providers append query parameters
+(`?sslmode=require&channel_binding=require`). Unquoted, `bash` sourcing the file treats
+`&` as a command separator and **backgrounds the assignment** — the variable ends up
+truncated and the shell prints a stray `[1]+ Done`.
+
+**3. Do not verify with a mask that hides the defect.** `sed 's|://[^@]*@|://***@|'`
+consumes everything up to the first `@`, which includes a duplicated scheme, so a broken
+value renders as a correct one. Verify by *parsing*:
+
+```bash
+set -a; . ~/.config/thedrop/thedrop.env; set +a; ~/thedrop/.venv/bin/python -c "import os;from urllib.parse import urlsplit;u=urlsplit(os.environ['DATABASE_URL'].replace('postgresql+psycopg://','postgresql://'));print('user:',u.username,'| host:',u.hostname,'| db:',u.path.lstrip('/'))"
+```
+
+**4. Remove any `.env` from the repo root.** `uv run` loads it and it overrides the
+exported environment, so `alembic upgrade head` silently targets whatever that file
+names — a stale placeholder pointing at `127.0.0.1:5432`, in the observed case. Rename
+it: `mv ~/thedrop/.env ~/thedrop/.env.disabled`.
+
+Then confirm nothing is left:
+
+```bash
+grep -c CHANGE_ME ~/.config/thedrop/thedrop.env
+```
+
+`ADMIN_INITIAL_PASSWORD=CHANGE_ME_ON_FIRST_LOGIN` counts — it is a real credential the
+seed script uses, not a placeholder to ignore.
+
+### 12.5 Redis on 6380
+
+`/usr/bin/redis-server` is executable by any user and 6380 is above 1024, so the
+dedicated instance ADR-0011 wanted is achievable without privilege. The panel's Redis on
+6379 stays untouched — it is shared with other sites under an eviction policy, and this
+application keeps admin sessions and login rate-limit counters in Redis.
+
+```bash
+mkdir -p ~/.local/state/thedrop/{run,log,backups,redis} && install -m 600 ~/thedrop/infrastructure/redis/thedrop-redis-userspace.conf ~/.config/thedrop/redis.conf
+```
+
+`dir` must be absolute — Redis resolves a relative path against PM2's working directory,
+which scatters the AOF and loses every session on restart:
+
+```bash
+sed -i "s|^dir .*|dir $HOME/.local/state/thedrop/redis|" ~/.config/thedrop/redis.conf
+```
+
+Set `requirepass` from the value already in the env file, so the two cannot drift:
+
+```bash
+P=$(grep '^REDIS_PASSWORD=' ~/.config/thedrop/thedrop.env | cut -d= -f2-) && sed -i "s|^# *requirepass .*|requirepass $P|" ~/.config/thedrop/redis.conf
+```
+
+> Generate the Redis password with `openssl rand -hex 24`, **not** `-base64`. Base64
+> emits `/`, `+` and `=`; a `/` inside `redis://:PASSWORD@host` is read as the start of a
+> path and the connection fails obscurely. Hex is URL-safe by construction.
+
+### 12.6 PM2
+
+```bash
+cd ~/thedrop && pm2 start infrastructure/pm2/ecosystem.config.cjs && pm2 save
+```
+
+`pm2 save` writes the dump that the existing `@reboot ... pm2 resurrect` crontab entry
+restores. **Without it a reboot restores whatever was saved last**, which is how a stale
+process outlives a deploy. `deploy-userspace.sh` runs it for you; a manual `pm2 start`
+does not.
+
+Two things the ecosystem file encodes that are easy to get wrong:
+
+- Each app needs an **explicit** `out_file`/`error_file`. PM2 does not expand `%name%` or
+  any placeholder — a templated path on shared defaults gives every app the *same* log
+  file, and `pm2 logs thedrop-worker` then prints everything except the worker.
+- The worker needs `PYTHONPATH=~/thedrop/services/worker`. `cd` is not enough: Python
+  adds the CWD to `sys.path` for `-c` and `-m` but never for an installed console script,
+  so `celery -A app.celery_app` resolves from its own `bin/` and crash-loops on
+  *The module app.celery_app was not found*.
+
+### 12.7 Migrations and seed
+
+```bash
+cd ~/thedrop && set -a; . ~/.config/thedrop/thedrop.env; set +a; ~/thedrop/.venv/bin/alembic -c packages/database/alembic.ini upgrade head
+```
+
+```bash
+cd ~/thedrop && set -a; . ~/.config/thedrop/thedrop.env; set +a; ~/thedrop/.venv/bin/python -m thedrop_database.seed
+```
+
+The seed creates the category taxonomy, roles, default settings and the initial admin
+user. **Without it `/api/v1/public/categories` returns `[]` and there is no account to
+log in with** — a state that otherwise looks like a healthy deployment.
+
+Call `.venv/bin/…` directly rather than `uv run`; see trap 4 above.
+
+### 12.8 Deploy
+
+```bash
+cd ~/thedrop && bash infrastructure/scripts/deploy-userspace.sh [git-ref] [--no-build] [--backup-verified]
+```
+
+`--backup-verified` is required on a host with no `pg_dump`, and asserts that a
+provider-side snapshot or PITR point exists. It is an explicit claim, not a skip: the
+script refuses to migrate without either a dump it took itself or this flag.
+
+Prefer `--no-build` with a bundle from `build-and-push.sh` on the desktop. A VPS build
+works but is the only sustained memory spike a deploy asks of the host.
+
+All five gates must pass, or the script rolls back:
+
+```
+health gate: api OK
+health gate: web OK
+health gate: route ownership OK (Node 200, proxy 401)
+health gate: static assets OK (…)
+health gate: worker stable (no restarts in 15s)
+```
+
+The worker gate samples PM2's restart counter twice, fifteen seconds apart. Status alone
+proves nothing — PM2 reports `online` the instant it spawns a process that is about to
+die, which is how three consecutive green deploys shipped a dead worker.
+
+### 12.9 Cutting over from an existing process
+
+When something already serves port 3100, free it *before* the deploy but keep it
+recoverable:
+
+Find its name with `pm2 list`; on this host it was `thedrop`.
+
+```bash
+pm2 stop thedrop
+```
+
+`stop` rather than `delete`: a stopped app releases the port and can be restarted if the
+deploy fails. Once all gates pass:
+
+```bash
+pm2 delete thedrop && pm2 save
+```
+
+### 12.10 Operations
+
+| Task | Command |
+|---|---|
+| Status | `pm2 list` — watch the `↺` column, not just `status` |
+| Logs | `pm2 logs thedrop-worker --lines 40 --nostream` |
+| Raw logs | `~/.local/state/thedrop/log/thedrop-<app>.log` and `.err.log` |
+| Restart one | `pm2 restart thedrop-api --update-env` |
+| Rollback | `deploy-userspace.sh <previous-sha>`; the sha is in `~/thedrop/.last_good_sha` |
+
+`logrotate` needs root, so install PM2's own rotation once:
+
+```bash
+pm2 install pm2-logrotate
+```
+
+### 12.11 Returning to the privileged deployment
+
+When root becomes available, follow ADR-0012's exit: install PostgreSQL per §4, migrate
+the data back, install the systemd units from §5, `pm2 delete all` and drop its crontab
+entry, then use `deploy.sh` instead of `deploy-userspace.sh`.
