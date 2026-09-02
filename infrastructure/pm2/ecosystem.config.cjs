@@ -38,9 +38,16 @@ const common = {
   min_uptime: 20000,
   merge_logs: true,
   time: true,
-  out_file: `${HOME}/.local/state/thedrop/log/%name%.log`,
-  error_file: `${HOME}/.local/state/thedrop/log/%name%.err.log`,
 };
+
+// PM2 does NOT expand `%name%` (or any placeholder) inside out_file/error_file -- it
+// treats the path literally. Setting one templated path on the shared defaults gave all
+// four apps the SAME log file, so `pm2 logs thedrop-worker` printed Redis, Next.js and
+// FastAPI output and none of the worker's. Each app gets its own explicit pair.
+const logs = (name) => ({
+  out_file: `${HOME}/.local/state/thedrop/log/${name}.log`,
+  error_file: `${HOME}/.local/state/thedrop/log/${name}.err.log`,
+});
 
 module.exports = {
   apps: [
@@ -50,6 +57,7 @@ module.exports = {
       // sessions and login rate-limit counters in Redis.
       ...common,
       name: "thedrop-redis",
+      ...logs("thedrop-redis"),
       script: "bash",
       args: ["-lc", `exec redis-server ${REDIS_CONF}`],
       // maxmemory in redis.conf caps the dataset at 256mb; this is the backstop.
@@ -58,6 +66,7 @@ module.exports = {
     {
       ...common,
       name: "thedrop-api",
+      ...logs("thedrop-api"),
       script: "bash",
       args: [
         "-lc",
@@ -79,6 +88,7 @@ module.exports = {
       // See ADR-0003.
       ...common,
       name: "thedrop-worker",
+      ...logs("thedrop-worker"),
       script: "bash",
       args: [
         "-lc",
@@ -94,6 +104,7 @@ module.exports = {
       // Bound to loopback. CloudPanel's nginx proxies to it; 3100 is never public.
       ...common,
       name: "thedrop-web",
+      ...logs("thedrop-web"),
       script: "bash",
       args: [
         "-lc",
