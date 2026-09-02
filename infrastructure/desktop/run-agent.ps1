@@ -21,11 +21,19 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
+    [string]$RepoRoot,
     [string]$LogDir = "$env:LOCALAPPDATA\thedrop\logs"
 )
 
 $ErrorActionPreference = "Stop"
+
+# $PSScriptRoot is NOT populated during parameter binding in Windows PowerShell 5.1 --
+# only once the body begins. A param-block default referencing it silently evaluates to
+# an empty string, and the first Split-Path then fails with an error naming the wrong
+# thing. Resolved here instead.
+if (-not $PSBoundParameters.ContainsKey('RepoRoot') -or [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+}
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $logFile = Join-Path $LogDir "agent-runner.log"

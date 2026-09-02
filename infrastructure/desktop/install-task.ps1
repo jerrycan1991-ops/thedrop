@@ -37,12 +37,20 @@ param(
     [string]$ApiUrl = "https://thedrop.channel",
     [securestring]$Token,
     [string]$WorkerName = "desktop-4070",
-    [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
+    [string]$RepoRoot,
     [string]$TaskName = "TheDrop Agent Runner",
     [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
+
+# $PSScriptRoot is NOT populated during parameter binding in Windows PowerShell 5.1 --
+# only once the body begins. A param-block default referencing it silently evaluates to
+# an empty string, and the first Split-Path then fails with an error naming the wrong
+# thing. Resolved here instead.
+if (-not $PSBoundParameters.ContainsKey('RepoRoot') -or [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+}
 
 if ($Uninstall) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
