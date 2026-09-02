@@ -100,17 +100,16 @@ def add_provider(
                 return 1
 
         if provider is None:
-            db.add(
-                Provider(
-                    slug=slug,
-                    display_name=name or slug,
-                    adapter_class=ADAPTER_CLASS,
-                    enabled=enable,
-                    config={"feed_url": target_url},
-                    poll_interval_minutes=poll_interval or 15,
-                    circuit_state=CircuitState.CLOSED,
-                )
+            provider = Provider(
+                slug=slug,
+                display_name=name or slug,
+                adapter_class=ADAPTER_CLASS,
+                enabled=enable,
+                config={"feed_url": target_url},
+                poll_interval_minutes=poll_interval or 15,
+                circuit_state=CircuitState.CLOSED,
             )
+            db.add(provider)
             action = "created"
         else:
             provider.config = {**(provider.config or {}), "feed_url": target_url}
@@ -127,8 +126,14 @@ def add_provider(
                 provider.consecutive_failures = 0
             action = "updated"
 
-    logger.info("provider %s: %s (%s)", action, slug, "enabled" if enable else "disabled")
-    if not enable:
+        # Read the row's ACTUAL state before the session closes, not the flag that was
+        # passed in. `--update` without `--enable` leaves `enabled` untouched, so
+        # reporting the flag told an operator their provider was disabled when it was
+        # polling normally -- and pointed them at a fix they did not need.
+        is_enabled = bool(provider.enabled) if provider is not None else enable
+
+    logger.info("provider %s: %s (%s)", action, slug, "enabled" if is_enabled else "disabled")
+    if not is_enabled:
         logger.info("nothing will poll it until you re-run with --enable")
     return 0
 
