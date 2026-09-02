@@ -1,0 +1,24 @@
+[project]
+name = "thedrop-agent-runner"
+version = "0.1.0"
+description = "Desktop AI runner for THE DROP - claims leased jobs over HTTPS"
+requires-python = ">=3.12,<3.14"
+
+# Deliberately NOT thedrop-database.
+#
+# This package runs on the desktop, which never holds database credentials. Its only
+# interface to the VPS is authenticated HTTPS to /api/v1/worker/* (ADR-0001), and
+# SECURITY.md classifies it as semi-trusted because it executes model output. Adding a
+# database dependency here would put a credential on the least-trusted machine we own.
+dependencies = [
+    "httpx>=0.28",
+]
+
+[tool.uv.sources]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent"]

@@ -12,13 +12,23 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["packages/config", "packages/database", "services/api", "services/worker"]
+members = [
+    "packages/config",
+    "packages/database",
+    "services/api",
+    "services/worker",
+    # Runs on the desktop, not the VPS. Kept in the workspace so it shares the
+    # lockfile and CI, but it deliberately does not depend on thedrop-database:
+    # the desktop never holds database credentials (ADR-0001).
+    "services/agent-runner",
+]
 
 [tool.uv.sources]
 thedrop-config = { workspace = true }
 thedrop-database = { workspace = true }
 thedrop-api = { workspace = true }
 thedrop-worker = { workspace = true }
+thedrop-agent-runner = { workspace = true }
 
 [dependency-groups]
 dev = [

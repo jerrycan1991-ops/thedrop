@@ -5,6 +5,7 @@ requires-python = ">=3.12, <3.14"
 [manifest]
 members = [
     "thedrop",
+    "thedrop-agent-runner",
     "thedrop-api",
     "thedrop-config",
     "thedrop-database",
@@ -1028,6 +1029,17 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.8" },
 ]
+
+[[package]]
+name = "thedrop-agent-runner"
+version = "0.1.0"
+source = { editable = "services/agent-runner" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "thedrop-api"

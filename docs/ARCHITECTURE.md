@@ -185,6 +185,10 @@ Never runs model inference, image generation or video rendering.
 
 ### 4.4 `agent-runner` — desktop
 
+Implemented in `services/agent-runner/`; see its README for provisioning and
+operation. Tokens are minted by `python -m thedrop_database.provision_worker` on the
+VPS and stored only as a SHA-256 digest.
+
 One supervised Python process that long-polls `POST /api/v1/worker/jobs/claim`, dispatches to a handler for the returned job type, and posts results back. Handlers are pluggable. Capabilities are advertised at registration (`{"gpu": true, "vram_gb": 12, "handlers": [...]}`) so the VPS only leases jobs the runner can actually execute.
 
 ---
