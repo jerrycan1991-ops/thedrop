@@ -324,3 +324,5 @@ See `docs/adr/`.
 - ADR-0009 — Affiliate product data carries per-field provenance; adapters are network-agnostic
 - ADR-0010 — Node and FastAPI share direct database access; Alembic remains the sole schema authority
 - ADR-0011 — PostgreSQL and Redis run natively under systemd; no Docker on the VPS
+- ADR-0012 — Unprivileged deployment: managed Postgres, user-space Redis, PM2
+- ADR-0013 — A source is a hostname; independence is a separate judgement

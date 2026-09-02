@@ -110,6 +110,11 @@ def resolve_source(db: Session, url: str) -> Source:
     satisfy a corroboration requirement alone until a human or a later phase classifies
     it -- inventing a reliability score here would put a number the pipeline trusts
     behind no evidence at all.
+
+    One hostname, one source. Only a leading `www.` is stripped, so `nasa.gov` and
+    `science.nasa.gov` are two rows. That is deliberate and it is NOT a licence to treat
+    them as two independent confirmations of a claim -- see ADR-0013. Nothing may infer
+    independence from source identity.
     """
     host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
     if not host:
