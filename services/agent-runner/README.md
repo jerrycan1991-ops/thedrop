@@ -83,6 +83,44 @@ The runner logs `claimed job` → `noop handler ran` → `completed job` within 
 interval. That exercises claim, dispatch, lease extension and completion without a
 provider, a model or the GPU being involved.
 
+## Running it as a service (Windows)
+
+`python -m agent` in a terminal dies with the terminal. For anything beyond a test, run
+it under Task Scheduler:
+
+```bash
+powershell -ExecutionPolicy Bypass -File infrastructure\desktop\install-task.ps1
+```
+
+It prompts for the token (hidden), stores config in the **user** environment, registers
+a task that starts at logon, and starts it. Logs go to
+`%LOCALAPPDATA%\thedrop\logs\agent-runner.log`.
+
+Task Scheduler rather than a Windows Service or PM2: it is native, it is where a Windows
+operator already looks, a real service would need a wrapper because Python is not a
+service host, and PM2's Windows boot persistence needs a third-party helper and is the
+flakiest part of PM2 on that platform.
+
+Three settings that matter:
+
+| Setting | Why |
+|---|---|
+| Runs as your user, not SYSTEM | Needs your `uv` and nvm PATH, and holds a credential that should not be available to every process |
+| `ExecutionTimeLimit` = 0 | The default three-day limit would silently kill a runner meant to run forever |
+| `MultipleInstances IgnoreNew` | Two runners on one token both claim jobs. The VPS tolerates it (`SKIP LOCKED`), but it doubles the poll rate and makes `current_job_count` meaningless |
+
+Restart is capped at 3 attempts, 5 minutes apart. The runner already survives an
+unreachable VPS on its own, backing off to 120 s — if it has *exited* three times in
+fifteen minutes, retrying is not the answer.
+
+```bash
+Get-ScheduledTask -TaskName "TheDrop Agent Runner" | Get-ScheduledTaskInfo
+```
+
+```bash
+powershell -File infrastructure\desktop\install-task.ps1 -Uninstall
+```
+
 ## Adding a handler
 
 The registry is the single source of truth: whatever is registered is what gets
