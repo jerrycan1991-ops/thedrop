@@ -75,6 +75,7 @@ def add_provider(
     poll_interval: int | None,
     update: bool,
     skip_validation: bool,
+    rescan: bool = False,
 ) -> int:
     with session_scope() as db:
         provider = db.scalar(select(Provider).where(Provider.slug == slug))
@@ -124,6 +125,18 @@ def add_provider(
                 provider.circuit_state = CircuitState.CLOSED
                 provider.circuit_opened_at = None
                 provider.consecutive_failures = 0
+            if rescan:
+                # Clearing the timestamps sends the next poll back through
+                # FIRST_RUN_LOOKBACK instead of the six-hour overlap.
+                #
+                # A provider gets exactly one wide backlog window, and it is consumed by
+                # the first poll that SUCCEEDS -- storing nothing still counts. So a feed
+                # enabled while the window was too narrow for its publishing cadence can
+                # never reach its own backlog again, and the items are not late, they are
+                # unreachable. Without this the only remedy is hand-editing the row.
+                provider.last_success_at = None
+                provider.last_error_at = None
+                provider.cursor = None
             action = "updated"
 
         # Read the row's ACTUAL state before the session closes, not the flag that was
@@ -151,6 +164,15 @@ def main() -> int:
     parser.add_argument("--poll-interval", type=int, help="Minutes between polls. Default 15.")
     parser.add_argument("--update", action="store_true", help="Modify an existing provider.")
     parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help=(
+            "Forget when this provider was last polled, so the next poll uses the full "
+            "first-run window again. For a feed enabled while that window was too "
+            "narrow to reach its backlog."
+        ),
+    )
+    parser.add_argument(
         "--skip-validation",
         action="store_true",
         help="Write the row without fetching the feed. For a feed that is temporarily down.",
@@ -165,6 +187,7 @@ def main() -> int:
         poll_interval=args.poll_interval,
         update=args.update,
         skip_validation=args.skip_validation,
+        rescan=args.rescan,
     )
 
 
