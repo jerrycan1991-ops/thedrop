@@ -55,6 +55,7 @@ class FakeApi:
         self.heartbeats = 0
         self.claim_error: int | None = None
         self.complete_status = 200
+        self.leased_jobs: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -95,7 +96,12 @@ class FakeApi:
 
         if path.endswith("/status"):
             return httpx.Response(
-                200, json={"name": "desktop-test", "status": "online", "leasedJobs": []}
+                200,
+                json={
+                    "name": "desktop-test",
+                    "status": "online",
+                    "leasedJobs": list(self.leased_jobs),
+                },
             )
 
         return httpx.Response(404, json={"detail": "no such route"})
@@ -332,6 +338,73 @@ def test_stop_event_ends_the_loop(api: FakeApi, client: WorkerClient) -> None:
         assert runner.run() == 0
     finally:
         timer.cancel()
+
+
+def test_startup_releases_leases_held_by_a_previous_run(
+    api: FakeApi, client: WorkerClient
+) -> None:
+    """A restarted runner must hand back what its dead predecessor was holding.
+
+    Worker identity is the token, not the process, so the new process IS the node that
+    still owns those leases -- and its heartbeats refresh them. Left alone the job never
+    expires (heartbeats keep extending) and never runs (this process does not know it
+    exists). Observed live: 894s remaining on a 900s lease minutes after the runner
+    holding it had been killed.
+    """
+    api.leased_jobs = ["orphan-1", "orphan-2"]
+    runner = make_runner(client)
+
+    runner._release_orphaned_leases()
+
+    assert set(api.failed) == {"orphan-1", "orphan-2"}
+    # Retryable: the work was never done, so it belongs back on the queue.
+    assert all(f["retryable"] is True for f in api.failed.values())
+
+
+def test_run_releases_orphans_before_heartbeating(api: FakeApi, client: WorkerClient) -> None:
+    """`run()` must actually call the reconciliation, and call it FIRST.
+
+    Testing the method alone would pass even if nobody invoked it -- and the first
+    heartbeat extends exactly the stale leases we are trying to release, so ordering is
+    part of the fix rather than a detail.
+    """
+    api.leased_jobs = ["orphan-1"]
+    runner = make_runner(client)
+    timer = threading.Timer(0.3, runner.stop_event.set)
+    timer.start()
+    try:
+        runner.run()
+    finally:
+        timer.cancel()
+
+    assert "orphan-1" in api.failed
+    release_index = next(i for i, (p, _) in enumerate(api.calls) if p.endswith("/fail"))
+    first_heartbeat = next(
+        (i for i, (p, _) in enumerate(api.calls) if p.endswith("/heartbeat")), len(api.calls)
+    )
+    assert release_index < first_heartbeat
+
+
+def test_startup_is_quiet_when_no_leases_are_held(api: FakeApi, client: WorkerClient) -> None:
+    runner = make_runner(client)
+
+    runner._release_orphaned_leases()
+
+    assert api.failed == {}
+
+
+def test_orphan_release_survives_an_unreachable_api(
+    api: FakeApi, client: WorkerClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconciliation that cannot run must not stop the runner from starting."""
+
+    def unreachable() -> dict[str, Any]:
+        raise ApiUnavailableError("connection refused")
+
+    monkeypatch.setattr(client, "status", unreachable)
+    runner = make_runner(client)
+
+    runner._release_orphaned_leases()  # must not raise
 
 
 def test_second_interrupt_exits_immediately(api: FakeApi, client: WorkerClient) -> None:

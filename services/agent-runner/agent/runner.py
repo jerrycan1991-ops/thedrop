@@ -172,6 +172,50 @@ class Runner:
             return
         logger.info("reported failure", extra={"job": job.id, "outcome": outcome})
 
+    # ------------------------------------------------------------------ startup
+    def _release_orphaned_leases(self) -> None:
+        """Give back leases held by a previous process of this same worker.
+
+        Worker identity is the token, not the process. So after a crash or a kill, the
+        restarted runner IS the node that still holds the dead process's leases -- and
+        its heartbeats extend them, because the API refreshes every lease belonging to
+        the node. The job would then never expire (heartbeats keep it alive) and never
+        run (this process does not know it exists). Stuck forever, silently.
+
+        Observed in the wild: a job killed mid-flight showed 894s of a 900s lease
+        remaining several minutes after the runner that claimed it had died.
+
+        Reporting them as retryable failures puts them straight back on the queue with
+        the standard backoff, which is what the reaper would have done had the lease
+        been allowed to lapse.
+        """
+        try:
+            status = self.client.status()
+        except (ApiUnavailableError, AuthRejectedError) as exc:
+            # Not fatal: the loop retries, and the leases stay stuck only until the next
+            # successful start. Better than refusing to run at all.
+            logger.warning("could not check for orphaned leases: %s", exc)
+            return
+
+        orphans = status.get("leasedJobs") or []
+        if not orphans:
+            return
+
+        logger.warning(
+            "releasing %d lease(s) held by a previous run of this worker: %s",
+            len(orphans),
+            ", ".join(orphans),
+        )
+        for job_id in orphans:
+            try:
+                self.client.fail(
+                    job_id,
+                    "runner restarted while holding this lease; returning it to the queue",
+                    retryable=True,
+                )
+            except (ApiUnavailableError, AuthRejectedError) as exc:
+                logger.warning("could not release lease %s: %s", job_id, exc)
+
     # ------------------------------------------------------------------ main loop
     def run(self) -> int:
         logger.info(
@@ -180,6 +224,10 @@ class Runner:
             self.config.api_url,
             ",".join(self.config.handlers),
         )
+
+        # BEFORE the heartbeat starts: the first beat would otherwise extend exactly the
+        # stale leases we are about to release.
+        self._release_orphaned_leases()
 
         heartbeat = threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True)
         heartbeat.start()
