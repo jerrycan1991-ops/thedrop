@@ -1,3 +1,4 @@
+import { SITE } from "@thedrop/config";
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
@@ -25,7 +26,17 @@ export function middleware(request: NextRequest) {
     const session = request.cookies.get(SESSION_COOKIE);
 
     if (!session?.value) {
-      const loginUrl = new URL("/admin/login", request.url);
+      // The base is the CONFIGURED site URL, never `request.url`.
+      //
+      // `request.url` is built from the Host header, which is attacker-controlled: a
+      // request with `Host: evil.com` would make this emit
+      // `Location: https://evil.com/admin/login`, turning the admin gate into an open
+      // redirect. It also broke in production for a duller reason -- the hosting
+      // panel's nginx proxies without `proxy_set_header Host $host`, so Next saw
+      // `Host: localhost:3100` and redirected admins to a machine-local address.
+      //
+      // SITE.url comes from NEXT_PUBLIC_SITE_URL, inlined at build time.
+      const loginUrl = new URL("/admin/login", SITE.url);
       loginUrl.searchParams.set("next", pathname);
       return NextResponse.redirect(loginUrl);
     }
