@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from thedrop_database import engine
 from thedrop_database.enums import DedupStatus, SourceType
 from thedrop_database.models import Provider, RawArticle
 from thedrop_ingest.dedup import simhash
@@ -49,9 +50,7 @@ def db() -> Iterator[Session]:
     database because it is the only Postgres available (ADR-0012), so committing would
     put fixture rows in the live `raw_articles` table.
     """
-    from thedrop_database.session import get_engine
-
-    connection = get_engine().connect()
+    connection = engine().connect()
     transaction = connection.begin()
     session = Session(bind=connection, join_transaction_mode="create_savepoint")
     try:
