@@ -129,6 +129,7 @@ advertised when claiming, so the API can never lease work this build cannot disp
 ```python
 from agent.handlers import register
 
+
 @register("embed")
 def embed(payload: dict) -> dict:
     ...
@@ -155,11 +156,29 @@ Re-provision the worker afterwards so its stored `capabilities` list matches.
   reaper requeues, and `idempotencyKey` is what makes the second run safe.
 - **SIGTERM finishes the current batch** before exiting. Those leases are already ours;
   abandoning them would mean waiting out the lease before anyone else could pick them up.
+- **Only one runner per worker name, per machine.** A second one exits `3` immediately
+  and names the pid holding the lock. This is not tidiness: worker identity is the
+  *token*, so two runners sharing one are a single node, and the startup lease release
+  would fail jobs the other is running — discarding finished work and spending
+  `attempts` on a job that never failed. The guard is an OS lock, so it cannot go stale.
+  It does **not** cover two machines sharing a token; see ADR-0014.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean stop (SIGTERM/SIGINT after finishing the batch) |
+| `1` | `--check` could not reach the API |
+| `2` | Configuration missing, or the token was rejected — needs a human |
+| `3` | Another runner already holds this worker name on this machine |
+
+`2` and `3` differ on purpose: `2` will never succeed on retry, `3` resolves the moment
+the other process exits.
 
 ## Tests
 
 ```bash
-uv run pytest tests/test_agent_runner.py
+uv run pytest tests/test_agent_runner.py tests/test_runner_single_instance.py
 ```
 
 Runs against an in-process mock of the real lease protocol — no services, no network.

@@ -111,4 +111,13 @@ if ($code -eq 2) {
     Write-Log "FATAL: worker token rejected. Re-provision on the VPS and re-run install-task.ps1."
 }
 
+# Exit 3 is a different animal: another runner already holds this worker name, so this
+# process refused to become a second claimant on one node's leases. Not fatal -- it
+# resolves the moment the other exits -- but it must not read as a crash, because the
+# correct response is to find the other process, not to re-provision anything.
+if ($code -eq 3) {
+    Write-Log "NOT STARTED: another runner already holds this worker name. See the line above for its pid."
+    Write-Log '  Find it with: Get-CimInstance Win32_Process -Filter "Name=''python.exe''" | Select-Object ProcessId, CommandLine'
+}
+
 exit $code

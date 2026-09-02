@@ -119,6 +119,36 @@ $settings = New-ScheduledTaskSettingsSet `
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
+# Stop a running instance BEFORE re-registering. `Register-ScheduledTask -Force`
+# replaces the task DEFINITION but does not touch a process already running under the
+# old one -- so re-pointing the task at a new repo root left the previous runner alive,
+# claiming jobs under the same worker name, indefinitely. That is how two orphans came
+# to be polling as desktop-4070 for a day.
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Output "Stopping the existing task before re-registering..."
+    try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch {}
+    # Stop-ScheduledTask returns before the process has actually gone.
+    for ($i = 0; $i -lt 20; $i++) {
+        if ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Running') { break }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+# Anything still running was not started by this task, so this script must not assume
+# it owns it. Reported rather than killed: a second runner may legitimately be serving
+# a different WORKER_NAME, which is not visible from the command line. The runner's
+# own single-instance lock is what actually prevents a collision -- this just makes the
+# cause obvious instead of leaving a task that starts and immediately exits 3.
+$foreign = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*-m agent*' })
+if ($foreign.Count -gt 0) {
+    Write-Warning "$($foreign.Count) agent-runner process(es) are still running and were not started by this task:"
+    foreach ($proc in $foreign) {
+        Write-Warning "  pid $($proc.ProcessId): $($proc.CommandLine)"
+    }
+    Write-Warning "If one holds the same WORKER_NAME, the new runner will exit 3. Stop it with: Stop-Process -Id <pid> -Force"
+}
+
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
