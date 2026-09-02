@@ -33,9 +33,19 @@ logger = logging.getLogger(__name__)
 CIRCUIT_FAILURE_THRESHOLD = 5
 CIRCUIT_OPEN_DURATION = timedelta(minutes=15)
 
-#: How far back to look when a provider has never succeeded. Bounded so a first poll of
-#: a long-lived feed does not import a decade of archive.
-FIRST_RUN_LOOKBACK = timedelta(days=2)
+#: How far back to look when a provider has never succeeded.
+#:
+#: Two days was too narrow, and the reasoning behind it was wrong. It was meant to stop
+#: a first poll importing a long archive -- but the real bound is MAX_ITEMS_PER_RUN and
+#: the feed's own length: a syndication feed carries what it carries, typically tens of
+#: items, not a decade.
+#:
+#: What a narrow window actually did was silently ignore the recent backlog of any
+#: low-volume publisher. Federal Reserve press releases arrive a couple of times a week,
+#: so a freshly enabled fed-press provider found nothing, stored nothing, and created no
+#: source row -- indistinguishable from a broken feed. Those are precisely the
+#: authoritative sources the corroboration rules value most.
+FIRST_RUN_LOOKBACK = timedelta(days=7)
 
 #: How far BEFORE the last success to re-examine on every subsequent poll.
 #:

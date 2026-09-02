@@ -290,9 +290,18 @@ def test_the_interval_comes_from_the_row_not_a_constant() -> None:
 
 
 def test_first_poll_looks_back_a_bounded_window() -> None:
-    """Enough to have something to ingest, not so much that a first poll imports an
-    archive."""
     assert window_start(None, NOW) == NOW - FIRST_RUN_LOOKBACK
+
+
+def test_first_run_window_covers_a_low_volume_publisher() -> None:
+    """A newly enabled provider must find something, or it looks broken.
+
+    Federal Reserve press releases arrive a couple of times a week. At two days, a
+    freshly enabled fed-press provider found nothing, stored nothing and created no
+    source row -- indistinguishable from a dead feed. Volume is bounded by
+    MAX_ITEMS_PER_RUN and the feed's own length, not by this window.
+    """
+    assert timedelta(days=7) <= FIRST_RUN_LOOKBACK
 
 
 def test_subsequent_polls_overlap_the_previous_one() -> None:
