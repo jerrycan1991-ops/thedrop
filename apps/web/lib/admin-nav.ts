@@ -30,7 +30,7 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   {
     label: "Newsroom",
     items: [
-      { href: "/admin/incoming", label: "Incoming Stories", phase: 2 },
+      { href: "/admin/incoming", label: "Incoming Stories" },
       { href: "/admin/viral-radar", label: "Viral Radar", phase: 3 },
       { href: "/admin/clusters", label: "Story Clusters", phase: 3 },
       { href: "/admin/drafts", label: "Drafts", phase: 4 },
@@ -64,8 +64,8 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   {
     label: "Sources",
     items: [
-      { href: "/admin/sources", label: "Sources", phase: 2 },
-      { href: "/admin/providers", label: "Providers", phase: 2 },
+      { href: "/admin/sources", label: "Sources" },
+      { href: "/admin/providers", label: "Providers" },
     ],
   },
   {
