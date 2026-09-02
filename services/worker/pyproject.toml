@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "thedrop-config",
     "thedrop-database",
+    "thedrop-ingest",
     "celery[redis]>=5.4",
     "redis>=5.2",
     "httpx>=0.28",
@@ -14,6 +15,7 @@ dependencies = [
 [tool.uv.sources]
 thedrop-config = { workspace = true }
 thedrop-database = { workspace = true }
+thedrop-ingest = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

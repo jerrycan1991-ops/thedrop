@@ -1,0 +1,49 @@
+[Unit]
+Description=THE DROP Redis (dedicated instance, port 6380)
+Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+# Deliberately NOT the distro's redis-server.service. That one belongs to the hosting
+# panel and serves its PHP sites on 6379; this is a separate instance with its own
+# config, password, data directory and eviction behaviour. Both run side by side.
+#
+# We ship our own unit rather than using the packaged redis-server@.service template
+# so the deployment does not depend on distro packaging details. See ADR-0011.
+
+[Service]
+Type=notify
+User=thedrop
+Group=thedrop
+ExecStart=/usr/bin/redis-server /etc/thedrop/redis.conf --supervised systemd
+ExecStop=/usr/bin/redis-cli -p 6380 shutdown
+
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/thedrop/redis
+
+# Matches the container's limit. The maxmemory setting in redis.conf caps the dataset;
+# this is the backstop that keeps a leak from starving Postgres on an 8GB box.
+MemoryMax=768M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=thedrop-redis
+
+[Install]
+WantedBy=multi-user.target

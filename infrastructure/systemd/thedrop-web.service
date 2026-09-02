@@ -1,16 +1,16 @@
 [Unit]
 Description=THE DROP web (Next.js)
 Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
-# The web tier now talks to PostgreSQL and Redis directly (they run under Docker
-# Compose), so it must start after docker.service — not only after the API. Before the
-# Node migration this unit needed nothing but thedrop-api.
+# The web tier talks to PostgreSQL and Redis directly, so it depends on the data
+# services — not only on the API. Before the Node migration this unit needed nothing
+# but thedrop-api.
 #
 # thedrop-api is still a dependency: /api/v1/worker/* and PUT /api/v1/admin/settings/{key}
 # are proxied to it. It is `Wants`, not `Requires`, so the public site still comes up if
 # FastAPI is down — only those proxied paths fail, which is the intended degradation.
-After=network-online.target docker.service thedrop-api.service
+After=network-online.target postgresql.service thedrop-redis.service thedrop-api.service
 Wants=network-online.target thedrop-api.service
-Requires=docker.service
+Requires=postgresql.service thedrop-redis.service
 
 [Service]
 Type=exec

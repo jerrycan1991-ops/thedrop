@@ -1,9 +1,12 @@
 [Unit]
 Description=THE DROP API (FastAPI)
 Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
-After=network-online.target docker.service
+# Postgres and Redis run natively under systemd, not in containers (ADR-0011).
+# `postgresql.service` is Debian's umbrella unit; `thedrop-redis.service` is this
+# project's own instance on 6380, distinct from the panel's Redis on 6379.
+After=network-online.target postgresql.service thedrop-redis.service
 Wants=network-online.target
-Requires=docker.service
+Requires=postgresql.service thedrop-redis.service
 
 [Service]
 Type=exec

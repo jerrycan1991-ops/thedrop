@@ -1,9 +1,9 @@
 [Unit]
 Description=THE DROP Celery worker (ingest, maintain, publish)
 Documentation=file:///opt/thedrop/docs/DEPLOYMENT.md
-After=network-online.target docker.service thedrop-api.service
+After=network-online.target postgresql.service thedrop-redis.service thedrop-api.service
 Wants=network-online.target
-Requires=docker.service
+Requires=postgresql.service thedrop-redis.service
 
 [Service]
 Type=exec
@@ -11,6 +11,11 @@ User=thedrop
 Group=thedrop
 WorkingDirectory=/opt/thedrop/services/worker
 EnvironmentFile=/etc/thedrop/thedrop.env
+
+# WorkingDirectory does not put this on sys.path. Python only adds the CWD for `-c`
+# and `-m`, never for an installed console script, so `celery` would resolve imports
+# from its own bin directory and fail with "The module app.celery_app was not found".
+Environment=PYTHONPATH=/opt/thedrop/services/worker
 
 # -B embeds the beat scheduler in this worker.
 #

@@ -3,7 +3,12 @@
 # THE DROP deploy.
 #
 # Run on the VPS as the `thedrop` user from /opt/thedrop:
-#   sudo -u thedrop bash infrastructure/scripts/deploy.sh [git-ref]
+#   sudo -u thedrop bash infrastructure/scripts/deploy.sh [git-ref] [--no-build]
+#
+# --no-build expects apps/web/.next/standalone to have been built on the desktop and
+# rsynced in by infrastructure/scripts/build-and-push.sh. The bundle carries a manifest
+# recording the SHA and the site URL it was built from, and this script refuses one that
+# does not match -- otherwise a failed rsync silently ships yesterday's UI.
 #
 # Takes a database snapshot before migrating, gates on health, and rolls back
 # automatically if the gate fails. Touches nothing in nginx.
@@ -13,9 +18,19 @@ set -Eeuo pipefail
 APP_DIR="${APP_DIR:-/opt/thedrop}"
 ENV_FILE="${ENV_FILE:-/etc/thedrop/thedrop.env}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/thedrop}"
-COMPOSE_FILE="$APP_DIR/infrastructure/docker/docker-compose.yml"
+REDIS_CONF="${REDIS_CONF:-/etc/thedrop/redis.conf}"
 LAST_GOOD_FILE="$APP_DIR/.last_good_sha"
-TARGET_REF="${1:-}"
+BUILD_MANIFEST_NAME=".thedrop-build"
+
+SKIP_BUILD=0
+TARGET_REF=""
+for arg in "$@"; do
+  case "$arg" in
+    --no-build) SKIP_BUILD=1 ;;
+    -*) echo "unknown flag: $arg" >&2; exit 2 ;;
+    *)  TARGET_REF="$arg" ;;
+  esac
+done
 
 HEALTH_TIMEOUT=60
 WEB_URL="http://127.0.0.1:3100/"
@@ -50,19 +65,58 @@ ACTUAL_NODE="$(node -v | sed 's/^v//' | cut -d. -f1)"
   || fail "node major mismatch: expected $EXPECTED_NODE, found $ACTUAL_NODE"
 
 # ---------------------------------------------------------------- data services
-log "ensuring postgres and redis are up"
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
+# Postgres and Redis are host services under systemd (ADR-0011), not containers. This
+# script does not start them -- they are enabled at boot and own their own lifecycle.
+# It refuses to continue when they are unreachable, because every later failure would
+# otherwise be a confusing symptom of the same cause.
+# shellcheck disable=SC1090
+set -a; source "$ENV_FILE"; set +a
+
+PG_PORT="${POSTGRES_HOST_PORT:-5432}"
+RD_PORT="${REDIS_HOST_PORT:-6380}"
+
+log "checking data services"
+systemctl is-active --quiet postgresql \
+  || fail "postgresql is not running: sudo systemctl status postgresql"
+systemctl is-active --quiet thedrop-redis \
+  || fail "thedrop-redis is not running: sudo systemctl status thedrop-redis"
+
+PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -p "$PG_PORT" -U "$POSTGRES_USER" \
+  -d "$POSTGRES_DB" -tAc 'SELECT 1' >/dev/null \
+  || fail "cannot reach postgres on 127.0.0.1:$PG_PORT as $POSTGRES_USER"
+
+redis-cli -h 127.0.0.1 -p "$RD_PORT" -a "$REDIS_PASSWORD" --no-auth-warning ping \
+  2>/dev/null | grep -q PONG \
+  || fail "cannot authenticate to redis on 127.0.0.1:$RD_PORT"
+
+# pgvector is an extension, not a server feature. The container image had it
+# preinstalled; a host install needs a separate package, and forgetting it surfaces as
+# a failed migration several minutes into a deploy.
+PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -p "$PG_PORT" -U "$POSTGRES_USER" \
+  -d "$POSTGRES_DB" -tAc "SELECT 1 FROM pg_available_extensions WHERE name='vector'" \
+  | grep -q 1 \
+  || fail "the 'vector' extension is unavailable: sudo apt install postgresql-16-pgvector"
+
+# The Redis password lives in two files: the env file the app reads and the config file
+# the server reads. A mismatch otherwise presents as a generic connection error.
+if [[ -r "$REDIS_CONF" ]] && grep -q '^requirepass ' "$REDIS_CONF"; then
+  CONF_PASS="$(awk '/^requirepass /{print $2; exit}' "$REDIS_CONF")"
+  [[ "$CONF_PASS" == "$REDIS_PASSWORD" ]] \
+    || fail "REDIS_PASSWORD in $ENV_FILE does not match requirepass in $REDIS_CONF"
+fi
+
+log "data services OK (postgres :$PG_PORT, redis :$RD_PORT)"
 
 # ---------------------------------------------------------------- backup
 mkdir -p "$BACKUP_DIR"
 SNAPSHOT="$BACKUP_DIR/pre-deploy-$(date +%Y%m%d-%H%M%S).dump"
 log "snapshotting database to $SNAPSHOT"
-# shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T postgres \
-  pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > "$SNAPSHOT" \
+PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -p "$PG_PORT" \
+  -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > "$SNAPSHOT" \
   || fail "backup failed - refusing to migrate without one"
+
+# A redirected pg_dump can still leave an empty file behind on some failures.
+[[ -s "$SNAPSHOT" ]] || fail "backup file is empty - refusing to migrate"
 
 # ---------------------------------------------------------------- build-time env gate
 # NEXT_PUBLIC_* values are inlined by `next build`; setting them at runtime does
@@ -81,41 +135,98 @@ if [[ "${ENVIRONMENT:-}" == "production" ]]; then
 fi
 
 # ---------------------------------------------------------------- dependencies
-log "installing dependencies"
-pnpm install --frozen-lockfile
+# The Python venv is always needed: the API and worker run from it. pnpm is only needed
+# when this host is doing the build -- the standalone bundle ships its own node_modules.
+log "syncing python dependencies"
 uv sync --frozen
 
-# ---------------------------------------------------------------- build
-# Capped so a build cannot OOM-kill Postgres on an 8GB box. The 4GB swapfile is the
-# backstop if this is still tight.
-log "building web"
-NODE_OPTIONS="--max-old-space-size=1536" pnpm --filter @thedrop/web build
-
-# --- standalone asset copy --------------------------------------------------
-# `output: "standalone"` deliberately does NOT copy .next/static or public/ into the
-# standalone tree -- Next.js expects the deployer to do it, on the assumption a CDN
-# usually serves them. We serve them from the Node process, so without this step the
-# site returns HTML with every CSS file and JS chunk 404ing: unstyled, no theme
-# toggle, no admin login form, and error pages 500 because they cannot render.
-#
-# Verified against a real build: the standalone tree contained 0 static chunks while
-# the build produced 47.
 STANDALONE="$APP_DIR/apps/web/.next/standalone/apps/web"
-[[ -f "$STANDALONE/server.js" ]] || fail "standalone build missing at $STANDALONE/server.js"
+MANIFEST="$STANDALONE/$BUILD_MANIFEST_NAME"
 
-log "copying static assets into the standalone tree"
-rm -rf "$STANDALONE/.next/static"
-mkdir -p "$STANDALONE/.next"
-cp -r "$APP_DIR/apps/web/.next/static" "$STANDALONE/.next/static"
+if [[ "$SKIP_BUILD" -eq 1 ]]; then
+  # ------------------------------------------------------------ prebuilt bundle
+  # Building on the desktop keeps the only real CPU/RAM spike off the VPS, but it moves
+  # the build-time env gate off this host too: NEXT_PUBLIC_SITE_URL is inlined by
+  # `next build`, so by the time the bundle arrives here it is already baked in and
+  # nothing on the VPS can fix it. The manifest is how the desktop reports what it
+  # actually built, and these checks are the only thing standing between a bad rsync
+  # and a site that looks healthy while serving localhost canonical URLs.
+  log "skipping build; verifying prebuilt bundle"
 
-if [[ -d "$APP_DIR/apps/web/public" ]]; then
-  rm -rf "$STANDALONE/public"
-  cp -r "$APP_DIR/apps/web/public" "$STANDALONE/public"
+  [[ -f "$STANDALONE/server.js" ]] \
+    || fail "--no-build but no bundle at $STANDALONE/server.js - run build-and-push.sh first"
+  [[ -f "$MANIFEST" ]] \
+    || fail "bundle has no $BUILD_MANIFEST_NAME manifest - it was not built by build-and-push.sh"
+
+  BUILT_SHA="$(awk -F= '/^sha=/{print $2; exit}' "$MANIFEST")"
+  BUILT_URL="$(awk -F= '/^site_url=/{sub(/^site_url=/, ""); print; exit}' "$MANIFEST")"
+  BUILT_NODE="$(awk -F= '/^node=/{print $2; exit}' "$MANIFEST")"
+
+  [[ "$BUILT_SHA" == "$TARGET_SHA" ]] \
+    || fail "bundle was built from $BUILT_SHA but this deploy targets $TARGET_SHA - rsync did not run, or ran before the commit"
+
+  [[ "$BUILT_NODE" == "$EXPECTED_NODE" ]] \
+    || fail "bundle was built with node $BUILT_NODE, this host expects $EXPECTED_NODE"
+
+  if [[ "${ENVIRONMENT:-}" == "production" ]]; then
+    [[ "$BUILT_URL" == "$NEXT_PUBLIC_SITE_URL" ]] \
+      || fail "bundle baked in NEXT_PUBLIC_SITE_URL=$BUILT_URL but $ENV_FILE says $NEXT_PUBLIC_SITE_URL"
+  fi
+
+  CHUNKS=$(find "$STANDALONE/.next/static" -name '*.js' 2>/dev/null | wc -l)
+  [[ "$CHUNKS" -gt 0 ]] \
+    || fail "bundle contains no JS chunks; static assets were not copied before rsync"
+
+  log "prebuilt bundle OK (sha $BUILT_SHA, node $BUILT_NODE, $CHUNKS chunks)"
+else
+  # ------------------------------------------------------------ build on this host
+  log "installing node dependencies"
+  pnpm install --frozen-lockfile
+
+  # Capped so a build cannot OOM-kill Postgres on an 8GB box. The 4GB swapfile is the
+  # backstop if this is still tight. Prefer --no-build with a desktop build.
+  log "building web"
+  NODE_OPTIONS="--max-old-space-size=1536" pnpm --filter @thedrop/web build
+
+  # --- standalone asset copy ------------------------------------------------
+  # `output: "standalone"` deliberately does NOT copy .next/static or public/ into the
+  # standalone tree -- Next.js expects the deployer to do it, on the assumption a CDN
+  # usually serves them. We serve them from the Node process, so without this step the
+  # site returns HTML with every CSS file and JS chunk 404ing: unstyled, no theme
+  # toggle, no admin login form, and error pages 500 because they cannot render.
+  #
+  # Verified against a real build: the standalone tree contained 0 static chunks while
+  # the build produced 47.
+  [[ -f "$STANDALONE/server.js" ]] || fail "standalone build missing at $STANDALONE/server.js"
+
+  log "copying static assets into the standalone tree"
+  rm -rf "$STANDALONE/.next/static"
+  mkdir -p "$STANDALONE/.next"
+  cp -r "$APP_DIR/apps/web/.next/static" "$STANDALONE/.next/static"
+
+  if [[ -d "$APP_DIR/apps/web/public" ]]; then
+    rm -rf "$STANDALONE/public"
+    cp -r "$APP_DIR/apps/web/public" "$STANDALONE/public"
+  fi
+
+  CHUNKS=$(find "$STANDALONE/.next/static" -name '*.js' | wc -l)
+  [[ "$CHUNKS" -gt 0 ]] || fail "no JS chunks copied into the standalone tree; the site would load unstyled"
+  log "copied $CHUNKS static chunks"
+
+  # `next build` regenerates apps/web/next-env.d.ts, and on some hosts it writes
+  # content that differs from what is committed. The tree is then dirty, and the NEXT
+  # `git merge` or `git checkout` aborts -- a deploy blocked by a file nobody edited.
+  #
+  # Restored rather than committed, because the file is generated and Next's own docs
+  # say not to edit it. Reported rather than restored silently: a persistent difference
+  # here means the build environments genuinely diverge, and that is worth someone
+  # looking at rather than being quietly reverted on every deploy.
+  if ! git -C "$APP_DIR" diff --quiet -- apps/web/next-env.d.ts 2>/dev/null; then
+    log "NOTE: the build rewrote apps/web/next-env.d.ts; restoring it so the next merge is not blocked"
+    git -C "$APP_DIR" diff -- apps/web/next-env.d.ts | head -20
+    git -C "$APP_DIR" checkout -- apps/web/next-env.d.ts
+  fi
 fi
-
-CHUNKS=$(find "$STANDALONE/.next/static" -name '*.js' | wc -l)
-[[ "$CHUNKS" -gt 0 ]] || fail "no JS chunks copied into the standalone tree; the site would load unstyled"
-log "copied $CHUNKS static chunks"
 
 # ---------------------------------------------------------------- migrate
 log "running migrations"

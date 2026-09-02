@@ -79,9 +79,9 @@ The rest of this document describes the original Phase 0 design.
    |   +----------------------------------------------+         |
    |                      |                                     |
    |   +----------------+   +----------------+                  |
-   |   | PostgreSQL 16  |   | Redis 7        | (docker compose) |
+   |   | PostgreSQL 16  |   | Redis 7        | (systemd, apt)   |
    |   | + pgvector     |   | broker + cache |                  |
-   |   | 127.0.0.1:5432 |   | 127.0.0.1:6379 |                  |
+   |   | 127.0.0.1:5432 |   | 127.0.0.1:6380 |                  |
    |   +----------------+   +----------------+                  |
    +-----------------------------------------------------------+
                                ^
@@ -117,8 +117,8 @@ The rest of this document describes the original Phase 0 design.
 | `thedrop-web` (Next.js standalone) | systemd | 127.0.0.1:3100 | ~350 MB |
 | `thedrop-api` (uvicorn, 2 workers) | systemd | 127.0.0.1:8000 | ~350 MB |
 | `thedrop-worker` (Celery, concurrency 2, `-B`) | systemd | — | ~400 MB |
-| `postgres:16` + pgvector | docker compose | 127.0.0.1:5432 | ~1.5 GB |
-| `redis:7-alpine` | docker compose | 127.0.0.1:6379 | ~0.6 GB |
+| `postgres:16` + pgvector | systemd (apt) | 127.0.0.1:5432 | ~1.5 GB |
+| `thedrop-redis` (dedicated instance) | systemd | 127.0.0.1:6380 | ~0.6 GB |
 | OS + journald + panel nginx | — | — | ~0.8 GB |
 | **Total** | | | **≈ 4.0 GB** |
 
@@ -137,7 +137,7 @@ Each line is a decision, not an oversight.
 | Prometheus + Grafana + exporters | ~700 MB for dashboards nobody watches at 3 a.m. | Structured JSON logs to journald; `/healthz` + `/metrics.json`; System Health page reads live from Postgres/Redis; external uptime pinger. |
 | MinIO / self-hosted S3 | Another 400 MB and another failure domain | Media on local disk at `/var/www/thedrop/media`. S3-compatible offload is a config swap. ADR-0007. |
 | Ollama / torch / ONNX on the VPS | 2–4 GB of ML deps on a 4-core box | VPS does **cheap** dedup only (canonical URL, SimHash of title+lede, `pg_trgm`). All embeddings computed on the desktop. ADR-0005. |
-| Docker for the app processes | Image builds and container overhead on a build-constrained box | Docker Compose for **stateful services only**. App code runs natively under systemd. ADR-0002. |
+| Docker anywhere on the VPS | A third process manager on a panel-managed box, plus daemon overhead, for two services the distro packages well | Everything under systemd: Postgres and Redis from apt, app code native. ADR-0011 supersedes ADR-0002. |
 | Kubernetes, service mesh, Kafka/NATS | Absurd at this scale | Redis + Postgres. |
 | ~~Next.js route handlers as the real backend~~ | *Reversed.* The extra HTTP hop sat on the render path, and TTFB feeds Core Web Vitals and Google News eligibility | Next.js now owns the public and admin HTTP layer; Python keeps worker, queue and AI work. ADR-0010. |
 
@@ -184,6 +184,10 @@ Owns SQLAlchemy models, Alembic migrations, Pydantic schemas, authorization, rat
 Never runs model inference, image generation or video rendering.
 
 ### 4.4 `agent-runner` — desktop
+
+Implemented in `services/agent-runner/`; see its README for provisioning and
+operation. Tokens are minted by `python -m thedrop_database.provision_worker` on the
+VPS and stored only as a SHA-256 digest.
 
 One supervised Python process that long-polls `POST /api/v1/worker/jobs/claim`, dispatches to a handler for the returned job type, and posts results back. Handlers are pluggable. Capabilities are advertised at registration (`{"gpu": true, "vram_gb": 12, "handlers": [...]}`) so the VPS only leases jobs the runner can actually execute.
 
@@ -271,7 +275,7 @@ Every `[desktop]` arrow is a leased job. Every other arrow is VPS-local.
 | Postgres down | Site serves stale ISR pages until revalidation fails, then 503 on dynamic routes. Hard alert. Restore from PITR. |
 | Claude API down or over budget | Generation jobs fail retryable with backoff. Emergency AI kill-switch (`ai.enabled=false`) stops job *creation* without touching ingestion. |
 | A provider errors | Per-provider circuit breaker. Other providers unaffected. `provider_errors` metric increments. |
-| Next.js build OOM on VPS | Build is memory-capped and swap-backed. Fallback: build on desktop, rsync `.next/standalone`. |
+| Next.js build OOM on VPS | Builds run on the desktop by default and ship as a verified bundle (`build-and-push.sh`). VPS-side builds remain available, memory-capped and swap-backed. |
 | Disk fills with media | Retention sweep plus alert at 75 %. Offload to S3-compatible storage is a config change. |
 
 ---
@@ -290,7 +294,7 @@ Every `[desktop]` arrow is a leased job. Every other arrow is VPS-local.
 | Images | ComfyUI + Flux.1-schnell / SDXL on RTX 4070 SUPER | 12 GB VRAM budget |
 | Video | ffmpeg + Remotion compositions, local TTS | MEDIA_PIPELINE.md |
 | Package mgmt | pnpm workspaces (JS), uv (Python) | |
-| Process mgmt | systemd (app), Docker Compose (Postgres, Redis) | |
+| Process mgmt | systemd, for everything on the VPS | ADR-0011 |
 
 Model IDs are configuration, never literals in code. See `packages/config`.
 
@@ -310,7 +314,7 @@ Model IDs are configuration, never literals in code. See `packages/config`.
 See `docs/adr/`.
 
 - ADR-0001 — Desktop pulls work over HTTPS; VPS never dials the desktop
-- ADR-0002 — Docker for stateful services only; systemd for app processes
+- ADR-0002 — Docker for stateful services only; systemd for app processes *(data-services half superseded by ADR-0011)*
 - ADR-0003 — Two-tier queue: Celery on VPS, HTTP job-lease for desktop
 - ADR-0004 — Admin lives inside `apps/web` as a route group
 - ADR-0005 — Single 384-dim embedding space, computed only on the desktop
@@ -319,3 +323,6 @@ See `docs/adr/`.
 - ADR-0008 — Untrusted source content is structurally isolated from instructions
 - ADR-0009 — Affiliate product data carries per-field provenance; adapters are network-agnostic
 - ADR-0010 — Node and FastAPI share direct database access; Alembic remains the sole schema authority
+- ADR-0011 — PostgreSQL and Redis run natively under systemd; no Docker on the VPS
+- ADR-0012 — Unprivileged deployment: managed Postgres, user-space Redis, PM2
+- ADR-0013 — A source is a hostname; independence is a separate judgement

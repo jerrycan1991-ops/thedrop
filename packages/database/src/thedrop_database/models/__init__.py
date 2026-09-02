@@ -29,7 +29,7 @@ from thedrop_database.models.content import (
 )
 from thedrop_database.models.core import Category, Setting, Tag, article_tags
 from thedrop_database.models.growth import AdPlacement, NewsletterSubscriber
-from thedrop_database.models.ingestion import Provider, Source
+from thedrop_database.models.ingestion import Provider, RawArticle, Source
 from thedrop_database.models.ops import Job, WorkerNode
 
 __all__ = [
@@ -56,6 +56,7 @@ __all__ = [
     "MediaAsset",
     "NewsletterSubscriber",
     "Provider",
+    "RawArticle",
     "Role",
     "Setting",
     "Source",

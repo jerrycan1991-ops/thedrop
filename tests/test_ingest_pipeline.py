@@ -1,0 +1,352 @@
+"""The database-touching half of ingestion.
+
+Split by what actually needs a database:
+
+  * The adapter registry, source auto-creation policy and circuit-breaker arithmetic
+    are decisions, not queries. They are tested directly, with no session, because
+    they are the parts most likely to be quietly changed and least likely to be
+    noticed.
+  * The dedup cascade and `poll` need real SQL -- band arithmetic evaluated by
+    Postgres, a unique-constraint race, JSONB round-tripping. **They are not covered
+    here.** No local Postgres was reachable when this was written, and a test authored
+    against a database it never ran on is worse than none: it looks like coverage.
+
+    Specifically unverified: the bit-shift band predicates in `_nearest_by_simhash`
+    (Postgres `>>` and `&` on a signed bigint), the IntegrityError path in
+    `store_item`, and `poll` end to end. That is a real gap, not an oversight.
+
+The registry is the security-relevant one. `providers.adapter_class` is documented as
+a dotted path "resolved at runtime"; importing whatever string sits in that column
+would turn any write access to the `providers` table into arbitrary code execution.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlalchemy import or_, select
+from sqlalchemy.dialects import postgresql
+from thedrop_database.enums import CircuitState, SourceType
+from thedrop_database.models import RawArticle
+from thedrop_ingest.pipeline import (
+    ADAPTER_REGISTRY,
+    CIRCUIT_FAILURE_THRESHOLD,
+    CIRCUIT_OPEN_DURATION,
+    FIRST_RUN_LOOKBACK,
+    POLL_OVERLAP,
+    AdapterNotRegisteredError,
+    _circuit_allows,
+    _record_failure,
+    _record_success,
+    band_predicates,
+    build_adapter,
+    next_due_at,
+    window_start,
+)
+from thedrop_ingest.providers import ProviderError, ProviderPage
+from thedrop_ingest.providers.rss import RSSProvider
+
+NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+
+
+class FakeProvider:
+    """Stands in for the ORM object; `poll` only ever touches these attributes."""
+
+    def __init__(self, **kwargs: object) -> None:
+        self.slug = "example"
+        self.adapter_class = "thedrop_ingest.providers.rss.RSSProvider"
+        self.config: dict[str, object] = {"feed_url": "https://example.com/feed.xml"}
+        self.enabled = True
+        self.circuit_state = CircuitState.CLOSED
+        self.circuit_opened_at: datetime | None = None
+        self.consecutive_failures = 0
+        self.last_success_at: datetime | None = None
+        self.last_error: str | None = None
+        self.last_error_at: datetime | None = None
+        self.cursor: str | None = None
+        self.poll_interval_minutes = 15
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+# ------------------------------------------------------------------ adapter registry
+
+
+def test_known_adapter_builds() -> None:
+    adapter = build_adapter(FakeProvider())
+    assert isinstance(adapter, RSSProvider)
+    assert adapter.feed_url == "https://example.com/feed.xml"
+
+
+def test_unregistered_adapter_is_refused_not_imported() -> None:
+    """The registry is the point: a dotted path from the database is never imported.
+
+    `adapter_class` is operator-supplied data. Resolving it with importlib would make
+    write access to one table equivalent to code execution, so an unknown value has to
+    be a loud error rather than an import attempt.
+    """
+    provider = FakeProvider(adapter_class="os.system")
+
+    with pytest.raises(AdapterNotRegisteredError, match="not registered"):
+        build_adapter(provider)
+
+
+def test_registry_rejects_a_plausible_but_absent_path() -> None:
+    provider = FakeProvider(adapter_class="thedrop_ingest.providers.rss.NotAProvider")
+
+    with pytest.raises(AdapterNotRegisteredError):
+        build_adapter(provider)
+
+
+def test_every_registered_value_is_the_class_it_names() -> None:
+    """A registry whose keys drift from its values is worse than no registry."""
+    for dotted, cls in ADAPTER_REGISTRY.items():
+        assert dotted == f"{cls.__module__}.{cls.__qualname__}"
+
+
+def test_missing_feed_url_is_a_configuration_error() -> None:
+    with pytest.raises(ProviderError, match="feed_url"):
+        build_adapter(FakeProvider(config={}))
+
+
+# ------------------------------------------------------------------ generated SQL
+
+
+def _shift_bind_types(fingerprint: int = 0x1234_5678_9ABC_DEF0) -> set[str]:
+    """The SQL types SQLAlchemy will bind the shift amounts as.
+
+    Not the compiled SQL string: with `literal_binds` the values are inlined and both
+    the correct and the broken form render identically. The `::BIGINT` in the real
+    error came from psycopg at execution time, not from the compiler. The bind
+    parameter's type is the only place the difference is visible before it reaches a
+    server -- checked while writing this test, because the first version of it passed
+    against the bug.
+    """
+    statement = select(RawArticle.id).where(or_(*band_predicates(fingerprint)))
+    compiled = statement.compile(dialect=postgresql.dialect())
+    shifts = {0, 16, 32, 48}
+    return {
+        type(bind.type).__name__
+        for bind in compiled.binds.values()
+        if isinstance(bind.value, int) and bind.value in shifts
+    }
+
+
+def test_shift_amount_is_bound_as_integer_not_bigint() -> None:
+    """Postgres defines the operator as `bigint >> integer`.
+
+    Letting SQLAlchemy infer the type from the column gives `bigint >> bigint`, which
+    does not exist:
+
+        operator does not exist: bigint >> bigint
+
+    It is invisible in Python, invisible in the compiled SQL, and fails on the first
+    real poll against a live server -- which is exactly what happened.
+    """
+    assert _shift_bind_types() == {"Integer"}
+
+
+def test_band_predicates_cover_every_band() -> None:
+    """One predicate per band, or the pigeonhole guarantee silently stops holding."""
+    from thedrop_ingest.dedup import BAND_COUNT
+
+    assert len(band_predicates(0x1234_5678_9ABC_DEF0)) == BAND_COUNT
+
+
+def test_band_predicates_mask_to_sixteen_bits() -> None:
+    statement = select(RawArticle.id).where(or_(*band_predicates(0x1234_5678_9ABC_DEF0)))
+    sql = str(
+        statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "65535" in sql
+
+
+# ------------------------------------------------------------------ circuit breaker
+
+
+def test_closed_circuit_allows_polling() -> None:
+    assert _circuit_allows(FakeProvider(), NOW) is True
+
+
+def test_failures_below_the_threshold_do_not_open_the_circuit() -> None:
+    provider = FakeProvider()
+    for _ in range(CIRCUIT_FAILURE_THRESHOLD - 1):
+        _record_failure(provider, "timeout", NOW)
+
+    assert provider.circuit_state == CircuitState.CLOSED
+    assert _circuit_allows(provider, NOW) is True
+
+
+def test_threshold_failures_open_the_circuit() -> None:
+    provider = FakeProvider()
+    for _ in range(CIRCUIT_FAILURE_THRESHOLD):
+        _record_failure(provider, "timeout", NOW)
+
+    assert provider.circuit_state == CircuitState.OPEN
+    assert _circuit_allows(provider, NOW) is False
+
+
+def test_open_circuit_blocks_until_the_window_elapses() -> None:
+    provider = FakeProvider(circuit_state=CircuitState.OPEN, circuit_opened_at=NOW)
+
+    assert _circuit_allows(provider, NOW + CIRCUIT_OPEN_DURATION - timedelta(seconds=1)) is False
+
+
+def test_circuit_half_opens_for_one_probe_after_the_window() -> None:
+    provider = FakeProvider(circuit_state=CircuitState.OPEN, circuit_opened_at=NOW)
+
+    assert _circuit_allows(provider, NOW + CIRCUIT_OPEN_DURATION) is True
+    assert provider.circuit_state == CircuitState.HALF_OPEN
+
+
+def test_success_closes_the_circuit_and_clears_the_error() -> None:
+    provider = FakeProvider(
+        circuit_state=CircuitState.HALF_OPEN,
+        circuit_opened_at=NOW,
+        consecutive_failures=7,
+        last_error="timeout",
+    )
+
+    _record_success(provider, ProviderPage(items=(), next_cursor="cursor-1"), NOW)
+
+    assert provider.circuit_state == CircuitState.CLOSED
+    assert provider.consecutive_failures == 0
+    assert provider.circuit_opened_at is None
+    assert provider.last_error is None
+    assert provider.cursor == "cursor-1"
+
+
+def test_success_without_a_cursor_keeps_the_previous_one() -> None:
+    """A feed that sends no Last-Modified must not lose the cursor we already had."""
+    provider = FakeProvider(cursor="cursor-1")
+
+    _record_success(provider, ProviderPage(items=(), next_cursor=None), NOW)
+
+    assert provider.cursor == "cursor-1"
+
+
+def test_a_failure_after_a_half_open_probe_reopens_the_circuit() -> None:
+    provider = FakeProvider(
+        circuit_state=CircuitState.HALF_OPEN,
+        consecutive_failures=CIRCUIT_FAILURE_THRESHOLD - 1,
+    )
+
+    _record_failure(provider, "still down", NOW)
+
+    assert provider.circuit_state == CircuitState.OPEN
+
+
+def test_error_text_is_truncated_before_storage() -> None:
+    provider = FakeProvider()
+    _record_failure(provider, "x" * 5000, NOW)
+
+    assert len(provider.last_error) <= 2000
+
+
+# ------------------------------------------------------------------ due-ness
+
+
+def test_a_provider_that_has_never_run_is_due_immediately() -> None:
+    assert next_due_at(FakeProvider(poll_interval_minutes=15)) is None
+
+
+def test_a_recent_success_pushes_the_next_attempt_out() -> None:
+    provider = FakeProvider(last_success_at=NOW, poll_interval_minutes=15)
+
+    assert next_due_at(provider) == NOW + timedelta(minutes=15)
+
+
+def test_a_failure_also_pushes_the_next_attempt_out() -> None:
+    """Keying on last success alone hammers a failing feed.
+
+    Without this, a provider that errors never updates `last_success_at`, looks
+    permanently overdue, and is re-dispatched every 60s -- four solid minutes of
+    retries against an unhappy publisher before the circuit breaker trips.
+    """
+    provider = FakeProvider(last_success_at=None, last_error_at=NOW, poll_interval_minutes=15)
+
+    assert next_due_at(provider) == NOW + timedelta(minutes=15)
+
+
+def test_the_most_recent_attempt_wins_whichever_it_was() -> None:
+    provider = FakeProvider(
+        last_success_at=NOW - timedelta(hours=2),
+        last_error_at=NOW,
+        poll_interval_minutes=15,
+    )
+
+    assert next_due_at(provider) == NOW + timedelta(minutes=15)
+
+
+def test_the_interval_comes_from_the_row_not_a_constant() -> None:
+    """Changing a feed's cadence must be a row update, not a redeploy."""
+    for minutes in (5, 15, 60):
+        provider = FakeProvider(last_success_at=NOW, poll_interval_minutes=minutes)
+        assert next_due_at(provider) == NOW + timedelta(minutes=minutes)
+
+
+# ------------------------------------------------------------------ poll window
+
+
+def test_first_poll_looks_back_a_bounded_window() -> None:
+    assert window_start(None, NOW) == NOW - FIRST_RUN_LOOKBACK
+
+
+def test_first_run_window_covers_a_low_volume_publisher() -> None:
+    """A newly enabled provider must find something, or it looks broken.
+
+    Federal Reserve press releases arrive a couple of times a week. At two days, a
+    freshly enabled fed-press provider found nothing, stored nothing and created no
+    source row -- indistinguishable from a dead feed. Volume is bounded by
+    MAX_ITEMS_PER_RUN and the feed's own length, not by this window.
+    """
+    assert timedelta(days=7) <= FIRST_RUN_LOOKBACK
+
+
+def test_subsequent_polls_overlap_the_previous_one() -> None:
+    """Resuming exactly at `last_success_at` loses articles, permanently and silently.
+
+    Feeds lag publication. An item stamped 10:00 may not appear until 10:05; a poll at
+    10:02 that resumes from 10:02 will judge it too old at 10:07 and never ingest it.
+    Observed live: the second poll of a working feed returned
+    `fetched: 0, skipped: 10` -- every item filtered out before dedup ever saw it.
+    """
+    last = NOW - timedelta(minutes=15)
+
+    assert window_start(last, NOW) == last - POLL_OVERLAP
+    assert window_start(last, NOW) < last
+
+
+def test_overlap_is_wide_enough_to_cover_realistic_feed_lag() -> None:
+    """A few minutes would not do. Feeds and CDNs can be hours behind."""
+    assert timedelta(hours=1) <= POLL_OVERLAP
+
+
+def test_window_start_is_timezone_aware_utc() -> None:
+    """A naive datetime compared against an aware one raises, mid-poll."""
+    assert window_start(None, NOW).tzinfo is not None
+    assert window_start(NOW - timedelta(hours=1), NOW).tzinfo is not None
+
+
+# ------------------------------------------------------------------ source policy
+
+
+def test_authority_suffixes_are_recognised_by_tld_not_by_judgement() -> None:
+    """`.gov` is a fact about the domain. Reliability is not, and is never guessed.
+
+    A new source starts untrusted regardless: it can contribute context, but cannot
+    satisfy a corroboration requirement alone until it is classified.
+    """
+    from thedrop_ingest.pipeline import _AUTHORITY_SUFFIXES
+
+    assert "senate.gov".endswith(_AUTHORITY_SUFFIXES)
+    assert "army.mil".endswith(_AUTHORITY_SUFFIXES)
+    assert not "example.com".endswith(_AUTHORITY_SUFFIXES)
+    # A lookalike must not qualify: the suffix has to be the actual TLD.
+    assert not "notreally-gov.com".endswith(_AUTHORITY_SUFFIXES)
+
+
+def test_source_type_enum_has_the_values_auto_creation_uses() -> None:
+    assert SourceType.GOVERNMENT
+    assert SourceType.UNKNOWN

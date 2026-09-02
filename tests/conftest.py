@@ -32,14 +32,55 @@ def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
         return False
 
 
+def _postgres_reachable(timeout: float = 4.0) -> bool:
+    """Whether db-marked tests can actually run, decided by CONNECTING.
+
+    Two things were wrong with the previous `127.0.0.1:5432` port probe.
+
+    It could not see the database at all once Postgres moved off the box (ADR-0012 puts
+    it on a managed provider), so every db-marked test silently skipped. "Skipped" and
+    "passed" look far too similar in a summary line.
+
+    Worse, a probe answers "yes" for ANY Postgres listening locally, including one whose
+    credentials we do not have -- the normal situation on a developer machine with an
+    unrelated Postgres installed. The tests then ran, failed at fixture setup, and
+    reported as ERRORs rather than skips: 147 of them on every full run, which trains
+    everyone to stop reading the summary.
+
+    Connecting distinguishes "no database" from "a database I cannot use", and both from
+    "ready".
+    """
+    try:
+        import psycopg
+        from thedrop_config import get_settings
+    except ImportError:
+        return False
+
+    # The URL the application itself would use: the environment when set, otherwise
+    # whatever settings resolves (a .env file, or the packaged default).
+    url = os.environ.get("DATABASE_URL", "").strip() or str(get_settings().database_url)
+
+    try:
+        with psycopg.connect(
+            url.replace("postgresql+psycopg://", "postgresql://"),
+            connect_timeout=int(timeout),
+        ):
+            return True
+    except Exception:
+        # Any failure -- unreachable, wrong password, missing database -- means the same
+        # thing here: these tests cannot run.
+        return False
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    postgres_up = _port_open("127.0.0.1", int(os.environ.get("POSTGRES_PORT", 5432)))
+    postgres_up = _postgres_reachable()
     redis_up = _port_open("127.0.0.1", int(os.environ.get("REDIS_PORT", 6379)))
     api_up = _port_open("127.0.0.1", int(os.environ.get("API_PORT", 8000)))
     web_up = _port_open("127.0.0.1", int(os.environ.get("WEB_PORT", 3100)))
 
     skip_db = pytest.mark.skip(
-        reason="PostgreSQL not reachable on 127.0.0.1:5432 - start Docker Desktop, then "
+        reason="PostgreSQL not reachable. Set DATABASE_URL to a real database (the "
+        "managed one is fine), or start a local instance with "
         "docker compose -f infrastructure/docker/docker-compose.dev.yml up -d"
     )
     skip_redis = pytest.mark.skip(reason="Redis not reachable on 127.0.0.1:6379")

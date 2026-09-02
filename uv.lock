@@ -5,9 +5,11 @@ requires-python = ">=3.12, <3.14"
 [manifest]
 members = [
     "thedrop",
+    "thedrop-agent-runner",
     "thedrop-api",
     "thedrop-config",
     "thedrop-database",
+    "thedrop-ingest",
     "thedrop-worker",
 ]
 
@@ -1001,6 +1003,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+desktop = [
+    { name = "thedrop-agent-runner" },
+]
 dev = [
     { name = "httpx" },
     { name = "mypy" },
@@ -1020,6 +1025,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+desktop = [{ name = "thedrop-agent-runner", editable = "services/agent-runner" }]
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", specifier = ">=1.13" },
@@ -1028,6 +1034,17 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.8" },
 ]
+
+[[package]]
+name = "thedrop-agent-runner"
+version = "0.1.0"
+source = { editable = "services/agent-runner" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "thedrop-api"
@@ -1097,6 +1114,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "thedrop-ingest"
+version = "0.1.0"
+source = { editable = "packages/ingest" }
+dependencies = [
+    { name = "httpx" },
+    { name = "thedrop-database" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "thedrop-database", editable = "packages/database" },
+]
+
+[[package]]
 name = "thedrop-worker"
 version = "0.1.0"
 source = { editable = "services/worker" }
@@ -1106,6 +1138,7 @@ dependencies = [
     { name = "redis" },
     { name = "thedrop-config" },
     { name = "thedrop-database" },
+    { name = "thedrop-ingest" },
 ]
 
 [package.metadata]
@@ -1115,6 +1148,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.2" },
     { name = "thedrop-config", editable = "packages/config" },
     { name = "thedrop-database", editable = "packages/database" },
+    { name = "thedrop-ingest", editable = "packages/ingest" },
 ]
 
 [[package]]
