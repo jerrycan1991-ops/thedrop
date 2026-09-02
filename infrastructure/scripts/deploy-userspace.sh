@@ -198,6 +198,20 @@ else
   CHUNKS=$(find "$STANDALONE/.next/static" -name '*.js' | wc -l)
   [[ "$CHUNKS" -gt 0 ]] || fail "no JS chunks copied into the standalone tree; the site would load unstyled"
   log "copied $CHUNKS static chunks"
+
+  # `next build` regenerates apps/web/next-env.d.ts, and on some hosts it writes
+  # content that differs from what is committed. The tree is then dirty, and the NEXT
+  # `git merge` or `git checkout` aborts -- a deploy blocked by a file nobody edited.
+  #
+  # Restored rather than committed, because the file is generated and Next's own docs
+  # say not to edit it. Reported rather than restored silently: a persistent difference
+  # here means the build environments genuinely diverge, and that is worth someone
+  # looking at rather than being quietly reverted on every deploy.
+  if ! git -C "$APP_DIR" diff --quiet -- apps/web/next-env.d.ts 2>/dev/null; then
+    log "NOTE: the build rewrote apps/web/next-env.d.ts; restoring it so the next merge is not blocked"
+    git -C "$APP_DIR" diff -- apps/web/next-env.d.ts | head -20
+    git -C "$APP_DIR" checkout -- apps/web/next-env.d.ts
+  fi
 fi
 
 # ---------------------------------------------------------------- migrate
