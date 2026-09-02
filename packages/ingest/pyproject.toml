@@ -1,10 +1,12 @@
 [project]
 name = "thedrop-ingest"
 version = "0.1.0"
-description = "Normalization and cheap deduplication for THE DROP - pure functions, no I/O"
+description = "Ingestion for THE DROP: providers, normalization, cheap deduplication"
 requires-python = ">=3.12,<3.14"
 
-# httpx and nothing else, deliberately.
+# `normalize` and `dedup` are pure and stdlib-only, and are tested without a database
+# or a network. `providers` adds httpx; `pipeline` adds the database. The split is
+# deliberate: the logic most worth testing exhaustively is the logic with no I/O.
 #
 # This is the VPS half of ingestion (PIPELINE.md 3-4): canonical URLs, hostile-text
 # handling, injection scanning, SimHash. It runs on a 4-core box shared with a hosting
@@ -22,7 +24,11 @@ requires-python = ">=3.12,<3.14"
 # defusedxml.
 dependencies = [
     "httpx>=0.28",
+    "thedrop-database",
 ]
+
+[tool.uv.sources]
+thedrop-database = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

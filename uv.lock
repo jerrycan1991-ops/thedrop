@@ -1115,10 +1115,14 @@ version = "0.1.0"
 source = { editable = "packages/ingest" }
 dependencies = [
     { name = "httpx" },
+    { name = "thedrop-database" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "thedrop-database", editable = "packages/database" },
+]
 
 [[package]]
 name = "thedrop-worker"
