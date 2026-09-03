@@ -52,6 +52,48 @@ class ArticleProvenance(StrEnum):
     GENERATED = "generated"
 
 
+class StoryStatus(StrEnum):
+    """A story's progress through the pipeline (PIPELINE.md).
+
+    Stored as text rather than a native enum, matching every other status column here:
+    adding a stage is then a code change, not a migration that rewrites a type while
+    the table is locked.
+    """
+
+    DISCOVERED = "discovered"
+    CLUSTERING = "clustering"
+    SCORING = "scoring"
+    EXTRACTING = "extracting"
+    VERIFYING = "verifying"
+    READY_TO_WRITE = "ready_to_write"
+    WRITING = "writing"
+    QA = "qa"
+    APPROVED = "approved"
+    PUBLISHED = "published"
+    REJECTED = "rejected"
+    DEFERRED = "deferred"
+
+
+class EntityType(StrEnum):
+    """DATABASE.md `entities.entity_type`."""
+
+    PERSON = "PERSON"
+    ORG = "ORG"
+    PLACE = "PLACE"
+    EVENT = "EVENT"
+    PRODUCT = "PRODUCT"
+    LEGISLATION = "LEGISLATION"
+    OTHER = "OTHER"
+
+
+class EntitySensitivity(StrEnum):
+    """Elevated covers minors, victims and anyone whose naming carries extra duty of
+    care. Carried on the entity so a story inherits it rather than re-deciding."""
+
+    NORMAL = "normal"
+    ELEVATED = "elevated"
+
+
 class RiskTier(StrEnum):
     """Drives how much evidence a claim needs. See PIPELINE.md §11."""
 

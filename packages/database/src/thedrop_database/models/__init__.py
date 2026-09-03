@@ -31,6 +31,7 @@ from thedrop_database.models.core import Category, Setting, Tag, article_tags
 from thedrop_database.models.growth import AdPlacement, NewsletterSubscriber
 from thedrop_database.models.ingestion import Provider, RawArticle, Source
 from thedrop_database.models.ops import Job, WorkerNode
+from thedrop_database.models.story import Entity, Story, StoryEntity, StorySource
 
 __all__ = [
     "AdPlacement",
@@ -52,6 +53,7 @@ __all__ = [
     "AuditLog",
     "Category",
     "Correction",
+    "Entity",
     "Job",
     "MediaAsset",
     "NewsletterSubscriber",
@@ -60,6 +62,9 @@ __all__ = [
     "Role",
     "Setting",
     "Source",
+    "Story",
+    "StoryEntity",
+    "StorySource",
     "Tag",
     "User",
     "WorkerNode",
