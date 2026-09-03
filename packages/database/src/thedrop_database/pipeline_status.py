@@ -15,9 +15,11 @@ against production, which under ADR-0012 is the only database there is.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from thedrop_database import engine
 
@@ -110,6 +112,32 @@ def show_clusters() -> int:
     return 0
 
 
+def _explain_connection_failure(exc: OperationalError) -> int:
+    """Say what went wrong instead of printing forty lines of driver traceback.
+
+    Missing `DATABASE_URL` is the overwhelmingly likely cause on the VPS: settings fall
+    back to a built-in localhost default, there is no Postgres on localhost there, and
+    the resulting stack trace names psycopg rather than the actual problem. This command
+    exists to be the easy operational check, so failing unhelpfully defeats it.
+    """
+    url = engine().url
+    print(f"cannot connect to {url.host}:{url.port}/{url.database}", file=sys.stderr)
+    # Keyed on the env var alone, not on the host. An unset DATABASE_URL is the
+    # actionable cause wherever it happens; adding a host check only creates a case
+    # where the advice is withheld precisely when it would have helped.
+    if not os.environ.get("DATABASE_URL"):
+        print("", file=sys.stderr)
+        print(
+            "DATABASE_URL is not set, so this fell back to the local default. "
+            "On the VPS, source the environment first:",
+            file=sys.stderr,
+        )
+        print("  set -a; . ~/.config/thedrop/thedrop.env; set +a", file=sys.stderr)
+    else:
+        print(f"  {exc.orig}", file=sys.stderr)
+    return 2
+
+
 def main() -> int:
     with engine().connect() as conn:
         stages = conn.execute(text(_STAGES)).one()
@@ -168,4 +196,7 @@ if __name__ == "__main__":
         help="list every multi-article story and its members, for judging precision",
     )
     args = parser.parse_args()
-    sys.exit(show_clusters() if args.clusters else main())
+    try:
+        sys.exit(show_clusters() if args.clusters else main())
+    except OperationalError as exc:
+        sys.exit(_explain_connection_failure(exc))
