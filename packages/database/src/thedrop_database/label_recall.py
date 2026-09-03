@@ -43,9 +43,11 @@ from thedrop_database.clustering import (
 )
 from thedrop_database.models import (
     ClusterLabel,
+    Entity,
     RawArticle,
     Source,
     Story,
+    StoryEntity,
     StoryPairLabel,
     StorySource,
 )
@@ -204,6 +206,65 @@ def already_judged(db, a: int, b: int) -> bool:
     ) > 0
 
 
+def _entity_names(db, story_id: int) -> list[str]:
+    """Every entity on a story, marked with whether the guard would let it license a
+    join. `-` means excluded: OTHER-typed, or too common to discriminate.
+    """
+    allowed = story_guard_entities(db, story_id)
+    rows = db.execute(
+        select(Entity.id, Entity.canonical_name, Entity.entity_type)
+        .join(StoryEntity, StoryEntity.entity_id == Entity.id)
+        .where(StoryEntity.story_id == story_id)
+        .order_by(Entity.canonical_name)
+    ).all()
+    return [
+        f"{'+' if entity_id in allowed else '-'} {name} ({kind})" for entity_id, name, kind in rows
+    ]
+
+
+def show_missed() -> int:
+    """Every pair a human called one event, with what each side's entities were.
+
+    "9 blocked by both" is a count, not a cause. Two articles about the same event that
+    share no discriminative entity mean either the tagger missed the names or the two
+    sides used different surface forms for the same thing -- and those have completely
+    different fixes. Lowering the similarity threshold recovers NONE of the `both`
+    cases, so reaching for it without reading these would be tuning the one lever that
+    cannot help.
+    """
+    with session_scope() as db:
+        pairs = db.execute(
+            select(
+                StoryPairLabel.story_id,
+                StoryPairLabel.other_story_id,
+                StoryPairLabel.similarity,
+                StoryPairLabel.shared_entities,
+            )
+            .where(StoryPairLabel.verdict == "same_event")
+            .order_by(StoryPairLabel.similarity.desc())
+        ).all()
+
+        if not pairs:
+            print("no missed joins recorded yet")
+            return 0
+
+        for story_id, other_id, similarity, shared in pairs:
+            candidate = Candidate(story_id, other_id, float(similarity or 0), int(shared or 0))
+            print(
+                f"stories {story_id} + {other_id}   similarity {float(similarity or 0):.3f}"
+                f"   shared {shared}   blocked by: {blocker(candidate)}"
+            )
+            for side in (story_id, other_id):
+                for line in _describe(db, side):
+                    print(f"     {line}")
+                names = _entity_names(db, side)
+                print(f"       entities: {', '.join(names) if names else '(none)'}")
+            print("")
+
+    print("+ can license a join, - excluded (OTHER-typed, or too common)")
+    return 0
+
+
 def report() -> int:
     with session_scope() as db:
         rows = db.execute(
@@ -324,6 +385,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", action="store_true", help="print the numbers and exit")
     parser.add_argument(
+        "--missed",
+        action="store_true",
+        help="show every missed join with both sides' entities, to see WHY it was missed",
+    )
+    parser.add_argument(
         "--limit", type=int, default=40, help="how many singletons to offer (default 40)"
     )
     args = parser.parse_args(argv)
@@ -334,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
         print("")
 
     try:
+        if args.missed:
+            return show_missed()
         return report() if args.report else label(args.limit)
     except OperationalError:
         url = engine().url
