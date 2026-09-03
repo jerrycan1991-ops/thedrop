@@ -1,6 +1,7 @@
 """What the pipeline has actually done, in one command.
 
     python -m thedrop_database.pipeline_status
+    python -m thedrop_database.pipeline_status --clusters
 
 Exists because checking it otherwise meant pasting a multi-line `python -c` into an SSH
 session, and terminals mangle long pastes -- bracketed-paste markers (`^[[200~`) end up
@@ -13,6 +14,7 @@ against production, which under ADR-0012 is the only database there is.
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 from sqlalchemy import text
@@ -65,6 +67,49 @@ from (
 """
 
 
+#: Multi-article stories with their members. Counts say whether clustering is
+#: degenerate; only the titles say whether it is RIGHT, and precision is the exit
+#: criterion. Reading a dozen clusters is the cheapest honest check there is.
+_CLUSTERS = """
+select s.id,
+       s.title            as story_title,
+       count(*) over (partition by s.id) as members,
+       src.domain,
+       ra.title           as article_title,
+       ss.similarity
+from story_sources ss
+join stories s      on s.id = ss.story_id
+join raw_articles ra on ra.id = ss.raw_article_id
+join sources src     on src.id = ra.source_id
+where s.id in (
+  select story_id from story_sources group by story_id having count(*) > 1
+)
+order by members desc, s.id, ss.similarity nulls first
+"""
+
+
+def show_clusters() -> int:
+    """Print every story with more than one article, and what is in it."""
+    with engine().connect() as conn:
+        rows = conn.execute(text(_CLUSTERS)).all()
+
+    if not rows:
+        print("no multi-article stories yet")
+        return 0
+
+    current = None
+    for row in rows:
+        if row.id != current:
+            current = row.id
+            print("")
+            print(f"story {row.id}  ({row.members} articles)  {row.story_title[:70]}")
+        # The similarity that justified the join, as recorded at the time. It cannot be
+        # recomputed later -- the centroid has moved since.
+        score = "founder" if row.similarity is None else f"{float(row.similarity):.3f}"
+        print(f"  {score:>8}  {row.domain:<28} {row.article_title[:64]}")
+    return 0
+
+
 def main() -> int:
     with engine().connect() as conn:
         stages = conn.execute(text(_STAGES)).one()
@@ -110,4 +155,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--clusters",
+        action="store_true",
+        help="list every multi-article story and its members, for judging precision",
+    )
+    args = parser.parse_args()
+    sys.exit(show_clusters() if args.clusters else main())
