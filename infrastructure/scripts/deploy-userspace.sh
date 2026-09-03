@@ -323,9 +323,32 @@ worker_gate() {
   log "health gate: worker stable (no restarts in 15s)"
 }
 
+# A stable worker still says nothing about whether the SCHEDULED work runs. Celery
+# catches an exception in a task, logs it, and waits for the next tick -- so a beat task
+# raising every 120 seconds leaves the process perfectly healthy and every gate above
+# truthfully green. That shipped: `dispatch_embedding_batches` crash-looped through two
+# deploys that reported six passing gates.
+#
+# This runs each interval-scheduled task once and fails the deploy if any raises. Cron
+# scheduled tasks are deliberately excluded -- see the script -- because running one
+# early is a behaviour change, not an early tick.
+beat_gate() {
+  local output
+  if ! output=$(cd "$APP_DIR" && PYTHONPATH="$APP_DIR/services/worker"       uv run python infrastructure/scripts/beat_smoke.py 2>&1); then
+    log "beat gate: a scheduled task failed to run"
+    printf '%s
+' "$output" >&2
+    return 1
+  fi
+  printf '%s
+' "$output" | sed 's/^/[deploy]   /'
+  log "health gate: scheduled tasks run"
+}
+
 ownership_gate || { log "route ownership gate failed"; rollback; }
 asset_gate     || { log "static asset gate failed"; rollback; }
 worker_gate    || { log "worker gate failed"; rollback; }
+beat_gate      || { log "beat gate failed"; rollback; }
 
 echo "$TARGET_SHA" > "$LAST_GOOD_FILE"
 log "migrations at head"
