@@ -18,9 +18,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
-from thedrop_database.enums import JobStatus, WorkerStatus
-from thedrop_database.models import Job, RawArticle
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from thedrop_database.enums import EntityType, JobStatus, WorkerStatus
+from thedrop_database.models import Entity, Job, RawArticle, RawArticleEntity
 
 from app.deps import SessionDep, SettingsDep, WorkerDep
 
@@ -71,6 +72,26 @@ class EmbeddingsRequest(BaseModel):
 
     model: str = Field(max_length=128)
     items: list[EmbeddingItem] = Field(min_length=1, max_length=128)
+
+
+class ExtractedEntity(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    type: str = Field(default="OTHER", max_length=16)
+    mentions: int = Field(default=1, ge=0)
+    salience: float | None = Field(default=None, ge=0, le=1)
+
+
+class ArticleEntities(BaseModel):
+    id: str = Field(max_length=64)
+    #: An EMPTY list is meaningful and must be sent: it says extraction ran and found
+    #: nothing, which is what stops the article being re-queued forever. Omitting the
+    #: article instead would be indistinguishable from never processing it.
+    entities: list[ExtractedEntity] = Field(max_length=64)
+
+
+class EntitiesRequest(BaseModel):
+    model: str = Field(max_length=128)
+    items: list[ArticleEntities] = Field(min_length=1, max_length=64)
 
 
 class CompleteRequest(BaseModel):
@@ -295,6 +316,80 @@ def store_embeddings(
 
     logger.info("embeddings stored", extra={"worker": node.name, "count": len(stored)})
     return {"stored": len(stored), "unknown": unknown}
+
+
+@router.post("/entities")
+def store_entities(payload: EntitiesRequest, node: WorkerDep, db: SessionDep) -> dict[str, Any]:
+    """Write desktop-extracted entities, resolving each name to a shared entity row.
+
+    Resolution by (canonical_name, entity_type) is what lets the clustering guard match
+    on `entity_id` rather than on approximate string equality. "Jerome Powell" is one
+    row whether it arrived on an article or was promoted onto a story.
+
+    An article's entity set is REPLACED, not merged. Re-extraction happens after a
+    model change or a requeued job, and merging would leave the output of two different
+    models mixed together in one article with no way to tell which came from where.
+
+    `entities_extracted_at` is set from the presence of the article in this payload,
+    not from whether any entities came back -- an article where the tagger found
+    nothing is processed, and must not be queued again.
+    """
+    known_types = {t.value for t in EntityType}
+    now = datetime.now(UTC)
+    stored = 0
+    unknown: list[str] = []
+
+    for item in payload.items:
+        article_id = db.scalar(select(RawArticle.id).where(RawArticle.public_id == item.id))
+        if article_id is None:
+            unknown.append(item.id)
+            continue
+
+        db.execute(delete(RawArticleEntity).where(RawArticleEntity.raw_article_id == article_id))
+
+        for extracted in item.entities:
+            entity_type = extracted.type if extracted.type in known_types else EntityType.OTHER
+            # ON CONFLICT DO UPDATE rather than DO NOTHING: `returning` yields no row on
+            # a plain DO NOTHING, so a second article mentioning a known entity would
+            # look like a failed insert and lose the link.
+            entity_id = db.execute(
+                pg_insert(Entity)
+                .values(canonical_name=extracted.name, entity_type=entity_type)
+                .on_conflict_do_update(
+                    constraint="uq_entities_name_type",
+                    set_={"canonical_name": extracted.name},
+                )
+                .returning(Entity.id)
+            ).scalar_one()
+
+            db.execute(
+                pg_insert(RawArticleEntity)
+                .values(
+                    raw_article_id=article_id,
+                    entity_id=entity_id,
+                    salience=extracted.salience,
+                    mention_count=extracted.mentions,
+                )
+                .on_conflict_do_nothing(constraint="uq_raw_article_entities_pair")
+            )
+            stored += 1
+
+        db.execute(
+            update(RawArticle).where(RawArticle.id == article_id).values(entities_extracted_at=now)
+        )
+
+    db.commit()
+
+    if unknown:
+        logger.warning(
+            "entities for unknown articles",
+            extra={"worker": node.name, "count": len(unknown)},
+        )
+    logger.info(
+        "entities stored",
+        extra={"worker": node.name, "articles": len(payload.items), "entities": stored},
+    )
+    return {"articles": len(payload.items) - len(unknown), "entities": stored, "unknown": unknown}
 
 
 @router.get("/status")

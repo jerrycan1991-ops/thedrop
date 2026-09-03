@@ -23,7 +23,13 @@ celery_app = Celery(
     "thedrop",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.maintain", "app.tasks.ingest", "app.tasks.embed", "app.tasks.publish"],
+    include=[
+        "app.tasks.maintain",
+        "app.tasks.ingest",
+        "app.tasks.embed",
+        "app.tasks.extract",
+        "app.tasks.publish",
+    ],
 )
 
 celery_app.conf.update(
@@ -53,6 +59,7 @@ celery_app.conf.update(
         # so changing that default would silently strand it on a queue nobody consumes,
         # with beat publishing every 120s and nothing ever running.
         "app.tasks.embed.*": {"queue": "maintain"},
+        "app.tasks.extract.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
 )
@@ -81,6 +88,12 @@ celery_app.conf.beat_schedule = {
     "dispatch-embedding-batches": {
         "task": "app.tasks.embed.dispatch_embedding_batches",
         "schedule": 120.0,
+    },
+    # Entity extraction feeds the clustering guard. Slower than embedding's tick
+    # because nothing downstream is waiting on it yet and it re-scans the same backlog.
+    "dispatch-extraction-batches": {
+        "task": "app.tasks.extract.dispatch_extraction_batches",
+        "schedule": 180.0,
     },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",

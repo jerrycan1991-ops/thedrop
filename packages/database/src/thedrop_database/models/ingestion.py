@@ -54,9 +54,7 @@ class Provider(Base, PrimaryKeyMixin, TimestampMixin):
     quota_used_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     poll_interval_minutes: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
 
-    default_reliability: Mapped[float] = mapped_column(
-        Numeric(4, 3), default=0.500, nullable=False
-    )
+    default_reliability: Mapped[float] = mapped_column(Numeric(4, 3), default=0.500, nullable=False)
 
     circuit_state: Mapped[str] = mapped_column(
         String(16), default=CircuitState.CLOSED, nullable=False
@@ -93,9 +91,7 @@ class Source(Base, PrimaryKeyMixin, TimestampMixin):
     source_type: Mapped[str] = mapped_column(
         String(24), default=SourceType.UNKNOWN, nullable=False, index=True
     )
-    reliability_score: Mapped[float] = mapped_column(
-        Numeric(4, 3), default=0.400, nullable=False
-    )
+    reliability_score: Mapped[float] = mapped_column(Numeric(4, 3), default=0.400, nullable=False)
     reliability_basis: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, nullable=False, comment="Inputs and last recomputation."
     )
@@ -198,6 +194,11 @@ class RawArticle(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     #: Written by the desktop (ADR-0005), null until then. The VPS never computes this.
     embedding: Mapped[list[float] | None] = mapped_column(Vector(384))
     embedded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: Set when entity extraction has RUN, which is not the same as having found
+    #: something. Without it an article with no recognisable entities is
+    #: indistinguishable from one never processed, and would be re-dispatched forever.
+    entities_extracted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     dedup_status: Mapped[str] = mapped_column(
         String(16), default=DedupStatus.PENDING, nullable=False

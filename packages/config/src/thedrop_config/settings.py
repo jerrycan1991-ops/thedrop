@@ -119,6 +119,13 @@ class AISettings(BaseSettings):
     embedding_max_batches_per_tick: int = Field(
         default=8, ge=1, le=64, alias="EMBEDDING_MAX_BATCHES_PER_TICK"
     )
+    #: NER for the clustering guard (PIPELINE.md 6). Smaller batches than embedding:
+    #: each item carries more text and a token classifier costs more per article.
+    entity_model: str = Field(default="dslim/bert-base-NER", alias="ENTITY_MODEL")
+    entity_batch_size: int = Field(default=16, ge=1, le=64, alias="ENTITY_BATCH_SIZE")
+    entity_max_batches_per_tick: int = Field(
+        default=8, ge=1, le=64, alias="ENTITY_MAX_BATCHES_PER_TICK"
+    )
 
     daily_budget_usd: float = Field(default=0.0, ge=0, alias="DAILY_AI_BUDGET_USD")
     monthly_budget_usd: float = Field(default=0.0, ge=0, alias="MONTHLY_AI_BUDGET_USD")

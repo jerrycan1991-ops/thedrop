@@ -74,8 +74,7 @@ def mark_stale_workers_offline() -> dict[str, int]:
             update(WorkerNode)
             .where(
                 WorkerNode.status != WorkerStatus.OFFLINE,
-                (WorkerNode.last_heartbeat_at.is_(None))
-                | (WorkerNode.last_heartbeat_at < cutoff),
+                (WorkerNode.last_heartbeat_at.is_(None)) | (WorkerNode.last_heartbeat_at < cutoff),
             )
             .values(status=WorkerStatus.OFFLINE, current_job_count=0)
         )

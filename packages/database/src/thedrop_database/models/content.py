@@ -134,9 +134,7 @@ class Article(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     )
     editorial_confidence: Mapped[int | None] = mapped_column(SmallInteger)
     qa_report: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
-    risk_tier: Mapped[str] = mapped_column(
-        String(16), default=RiskTier.STANDARD, nullable=False
-    )
+    risk_tier: Mapped[str] = mapped_column(String(16), default=RiskTier.STANDARD, nullable=False)
 
     # No default, in either layer. An omitted provenance must raise a NOT NULL
     # violation, not quietly become 'manual' -- 'manual' is the value that escapes the

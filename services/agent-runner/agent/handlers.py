@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from agent import embedding
+from agent import embedding, entities
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,44 @@ def embed_articles(payload: dict[str, Any]) -> dict[str, Any]:
         "model": embedding.model_name(),
         "embeddings": [{"id": i, "vector": v} for i, v in zip(ids, vectors, strict=True)],
     }
+
+
+@register("extract_entities")
+def extract_entities(payload: dict[str, Any]) -> dict[str, Any]:
+    """Tag salient entities in a batch of articles (PIPELINE.md 12).
+
+    Returns them under `articleEntities`; the RUNNER posts them and strips them before
+    completing, for the same reason embeddings never reach `jobs.result`.
+
+    An article with no recognisable entities returns an empty list rather than being
+    omitted. The distinction is load-bearing: the VPS marks extraction as HAVING RUN
+    from what comes back, and an omitted article would be re-queued forever.
+    """
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise NonRetryableError("extract_entities payload has no items")
+
+    results: list[dict[str, Any]] = []
+    for item in items:
+        article_id = (item or {}).get("id")
+        text = (item or {}).get("text")
+        if not article_id or not text:
+            raise NonRetryableError(f"extract_entities item is missing id or text: {item!r}")
+        results.append({"id": str(article_id), "entities": entities.extract(str(text))})
+
+    found = sum(len(r["entities"]) for r in results)
+    logger.info("extracted entities", extra={"articles": len(results), "entities": found})
+    return {"model": entities.model_name(), "articleEntities": results}
+
+
+if not entities.is_available():
+    # Same fail-safe as embeddings: advertise only what this build can dispatch, so the
+    # API never leases extraction to a desktop that cannot perform it.
+    del _REGISTRY["extract_entities"]
+    logger.warning(
+        "transformers is not installed; not advertising 'extract_entities'. "
+        "Install the desktop group: uv sync --group desktop-ml"
+    )
 
 
 if not embedding.is_available():

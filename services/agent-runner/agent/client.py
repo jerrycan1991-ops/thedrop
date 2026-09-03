@@ -174,6 +174,28 @@ class WorkerClient:
             raise ApiUnavailableError(f"{response.status_code} from /embeddings")
         return dict(response.json())
 
+    def store_entities(self, model: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Post extracted entities, before completing the job that produced them.
+
+        Same contract and same ordering as `store_embeddings`: deliver first, complete
+        second, so a crash in between costs a re-extraction rather than an article
+        marked processed whose entities were never stored.
+        """
+        try:
+            response = self._client.post(
+                "/api/v1/worker/entities", json={"model": model, "items": items}
+            )
+        except httpx.HTTPError as exc:
+            raise ApiUnavailableError(str(exc)) from exc
+
+        if response.status_code == 401:
+            raise AuthRejectedError("worker token rejected")
+        if response.status_code == 400:
+            raise PayloadRejectedError(response.text[:400])
+        if response.status_code != 200:
+            raise ApiUnavailableError(f"{response.status_code} from /entities")
+        return dict(response.json())
+
     def status(self) -> dict[str, Any]:
         try:
             response = self._client.get("/api/v1/worker/status")

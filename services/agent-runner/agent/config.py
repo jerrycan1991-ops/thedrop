@@ -68,9 +68,7 @@ def load_config(handlers: tuple[str, ...]) -> RunnerConfig:
     # reaches the VPS across the public internet, so this is not a preference.
     is_local = "localhost" in api_url or "127.0.0.1" in api_url
     if not api_url.startswith("https://") and not is_local:
-        raise ConfigError(
-            f"THEDROP_API_URL must be https:// outside local testing (got {api_url})"
-        )
+        raise ConfigError(f"THEDROP_API_URL must be https:// outside local testing (got {api_url})")
 
     return RunnerConfig(
         api_url=api_url,

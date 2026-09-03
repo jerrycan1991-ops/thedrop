@@ -71,9 +71,7 @@ class Story(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
 
     # No index=True: ix_stories_status_activity leads with status, so a standalone
     # index on it would be a second copy of the same prefix.
-    status: Mapped[str] = mapped_column(
-        String(16), default=StoryStatus.DISCOVERED, nullable=False
-    )
+    status: Mapped[str] = mapped_column(String(16), default=StoryStatus.DISCOVERED, nullable=False)
 
     #: Distinct `sources`, and the subset judged independent. They differ because forty
     #: outlets carrying one wire story are forty sources and one witness -- ADR-0013.
@@ -95,9 +93,7 @@ class Story(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     verification_confidence: Mapped[int | None] = mapped_column(SmallInteger)
     scores_computed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
-    risk_tier: Mapped[str] = mapped_column(
-        String(16), default=RiskTier.STANDARD, nullable=False
-    )
+    risk_tier: Mapped[str] = mapped_column(String(16), default=RiskTier.STANDARD, nullable=False)
     risk_reasons: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
 
     #: Carried into the evidence packet rather than silently dropped: what the sources
@@ -156,9 +152,7 @@ class Entity(Base, PrimaryKeyMixin, TimestampMixin):
     )
 
     canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    entity_type: Mapped[str] = mapped_column(
-        String(16), default=EntityType.OTHER, nullable=False
-    )
+    entity_type: Mapped[str] = mapped_column(String(16), default=EntityType.OTHER, nullable=False)
     aliases: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
     wikidata_id: Mapped[str | None] = mapped_column(String(32))
     is_public_figure: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -190,5 +184,38 @@ class StoryEntity(Base, PrimaryKeyMixin):
     entity_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
     )
+    salience: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    mention_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class RawArticleEntity(Base, PrimaryKeyMixin):
+    """Entities found in ONE article, before it belongs to any story.
+
+    `story_entities` cannot serve this. The clustering guard has to compare the
+    incoming article's entities against a candidate story's entities *before* deciding
+    whether the article joins it -- so at the moment the comparison happens, the article
+    has no story. This is the article side of that comparison.
+
+    It resolves to the same `entities` rows the story side uses, so "Jerome Powell" is
+    one entity whether it was seen in an article or promoted onto a story. Matching on
+    entity_id rather than on strings is what keeps the guard from turning into
+    approximate name comparison.
+    """
+
+    __tablename__ = "raw_article_entities"
+    __table_args__ = (
+        UniqueConstraint("raw_article_id", "entity_id", name="uq_raw_article_entities_pair"),
+        Index("ix_raw_article_entities_entity", "entity_id"),
+    )
+
+    # No index=True: uq_raw_article_entities_pair leads with raw_article_id.
+    raw_article_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("raw_articles.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Share of this article's entity mentions that were this entity. Centrality, not
+    #: model confidence -- a name mentioned once in passing should not gate a merge.
     salience: Mapped[float | None] = mapped_column(Numeric(4, 3))
     mention_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

@@ -253,9 +253,7 @@ class FieldSource(StrEnum):
 
 
 #: Only these two sources are trusted enough to render a price, rating or availability.
-TRUSTED_FIELD_SOURCES: frozenset[str] = frozenset(
-    {FieldSource.API, FieldSource.ADMIN_OVERRIDE}
-)
+TRUSTED_FIELD_SOURCES: frozenset[str] = frozenset({FieldSource.API, FieldSource.ADMIN_OVERRIDE})
 
 
 class ProductStatus(StrEnum):

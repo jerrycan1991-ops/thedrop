@@ -45,9 +45,7 @@ def _owner_token() -> str:
 
 
 @contextmanager
-def provider_lock(
-    slug: str, ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS
-) -> Iterator[bool]:
+def provider_lock(slug: str, ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS) -> Iterator[bool]:
     """Hold the lock for `slug` if it is free. Yields whether it was acquired.
 
     Yielding False rather than raising: a provider already being polled is the normal
