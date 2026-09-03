@@ -24,6 +24,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -259,6 +260,45 @@ class ClusterLabel(Base, PrimaryKeyMixin):
     #: bias the measurement towards the easy cases.
     verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
+    labelled_by: Mapped[str | None] = mapped_column(String(64))
+    labelled_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+
+
+class StoryPairLabel(Base, PrimaryKeyMixin):
+    """A human verdict on two stories that were NOT clustered together.
+
+    The other half of the exit criterion. `cluster_labels` judges placements that
+    HAPPENED, so it can only ever find the threshold too loose. It is blind by
+    construction to articles that should have joined and did not -- and that is the
+    failure this design deliberately courts, since over-splitting is its chosen safe
+    direction.
+
+    Stored per PAIR with the lower id first, so one judgement is recorded once however
+    the pair is encountered.
+    """
+
+    __tablename__ = "story_pair_labels"
+    __table_args__ = (
+        UniqueConstraint("story_id", "other_story_id", name="uq_story_pair_labels_pair"),
+        CheckConstraint("story_id < other_story_id", name="ck_story_pair_labels_ordered"),
+        Index("ix_story_pair_labels_other", "other_story_id"),
+    )
+
+    story_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    other_story_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    #: same_event | different | unsure
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Similarity and shared-entity count AS THEY WERE when the pair was judged. The
+    #: point of recording them is diagnosis: for a pair a human calls one event, they
+    #: say whether the threshold or the entity guard is what kept them apart.
+    similarity: Mapped[float | None] = mapped_column(Numeric(5, 4))
+    shared_entities: Mapped[int | None] = mapped_column(Integer)
     labelled_by: Mapped[str | None] = mapped_column(String(64))
     labelled_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()"), nullable=False

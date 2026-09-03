@@ -37,6 +37,7 @@ from thedrop_database.models.story import (
     RawArticleEntity,
     Story,
     StoryEntity,
+    StoryPairLabel,
     StorySource,
 )
 
@@ -73,6 +74,7 @@ __all__ = [
     "Source",
     "Story",
     "StoryEntity",
+    "StoryPairLabel",
     "StorySource",
     "Tag",
     "User",
