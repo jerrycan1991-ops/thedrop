@@ -25,13 +25,13 @@ from app.routers.worker import ArticleEntities, EntitiesRequest, ExtractedEntity
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from thedrop_database import engine
-from thedrop_database.enums import JobStatus
 from thedrop_database.entity_queue import (
     JOB_TYPE,
     MAX_TEXT_CHARS,
     enqueue_extraction_batches,
     pending_extraction_count,
 )
+from thedrop_database.enums import JobStatus
 from thedrop_database.models import Entity, Job, Provider, RawArticle, RawArticleEntity, Source
 
 pytestmark = pytest.mark.db
