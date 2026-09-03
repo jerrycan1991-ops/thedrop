@@ -245,7 +245,9 @@ class AffiliateLink(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
         JSONB, default=dict, nullable=False
     )
 
-    status: Mapped[str] = mapped_column(String(16), default=LinkHealth.UNCHECKED, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), default=LinkHealth.UNCHECKED, nullable=False
+    )
     last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
@@ -342,7 +344,9 @@ class AffiliateArticle(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(
         String(24), default=AffiliateArticleStatus.DRAFT, nullable=False
     )
-    publish_mode: Mapped[str] = mapped_column(String(16), default=PublishMode.DRAFT, nullable=False)
+    publish_mode: Mapped[str] = mapped_column(
+        String(16), default=PublishMode.DRAFT, nullable=False
+    )
     scheduled_for: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     disclosure_id: Mapped[int | None] = mapped_column(
@@ -379,9 +383,7 @@ class AffiliateArticleProduct(Base, PrimaryKeyMixin):
         BigInteger, ForeignKey("affiliate_articles.id", ondelete="CASCADE"), nullable=False
     )
     product_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey("affiliate_products.id", ondelete="CASCADE"),
-        nullable=False,
+        BigInteger, ForeignKey("affiliate_products.id", ondelete="CASCADE"), nullable=False,
         index=True,
     )
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

@@ -161,7 +161,9 @@ def seed() -> int:
         for key, value, description, protected in SETTINGS:
             if db.scalar(select(Setting).where(Setting.key == key)) is None:
                 db.add(
-                    Setting(key=key, value=value, description=description, is_protected=protected)
+                    Setting(
+                        key=key, value=value, description=description, is_protected=protected
+                    )
                 )
                 created["settings"] = created.get("settings", 0) + 1
 

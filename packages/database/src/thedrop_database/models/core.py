@@ -80,7 +80,9 @@ class Tag(Base, PrimaryKeyMixin, TimestampMixin):
     usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_trending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    articles: Mapped[list[Article]] = relationship(secondary=article_tags, back_populates="tags")
+    articles: Mapped[list[Article]] = relationship(
+        secondary=article_tags, back_populates="tags"
+    )
 
     def __repr__(self) -> str:
         return f"<Tag {self.slug}>"
