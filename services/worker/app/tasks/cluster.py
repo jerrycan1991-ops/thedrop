@@ -38,7 +38,6 @@ def cluster_ready_articles() -> dict[str, object]:
             return {"clustered": 0, "pending": None, "status": "already_clustering"}
 
         with session_scope() as db:
-            pending = pending_clustering_count(db)
             decisions = cluster_pending(
                 db,
                 limit=settings.ai.cluster_max_per_tick,
@@ -48,6 +47,10 @@ def cluster_ready_articles() -> dict[str, object]:
                 max_fraction=settings.ai.entity_guard_max_doc_fraction,
                 min_floor=settings.ai.entity_guard_min_doc_floor,
             )
+            # Measured AFTER the work, so it reports what is still waiting rather than
+            # what was waiting when the task started. The first real run said
+            # `clustered: 152, pending: 152`, which reads as though nothing moved.
+            pending = pending_clustering_count(db)
 
     joined = sum(1 for d in decisions if d.joined)
     if decisions:
