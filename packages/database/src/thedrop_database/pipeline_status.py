@@ -22,6 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from thedrop_database import engine
+from thedrop_database.operator_env import load_operator_env
 
 #: Ordered oldest-stage-first, so the row where the numbers stop moving is the stage
 #: that is stuck.
@@ -196,6 +197,14 @@ if __name__ == "__main__":
         help="list every multi-article story and its members, for judging precision",
     )
     args = parser.parse_args()
+    # Before anything touches the database: a command typed into an SSH session has
+    # no environment of its own. Reported rather than silent -- loading a credential
+    # file should be visible in the output that follows.
+    loaded = load_operator_env()
+    if loaded:
+        print(f"(configuration from {loaded})")
+        print("")
+
     try:
         sys.exit(show_clusters() if args.clusters else main())
     except OperationalError as exc:
