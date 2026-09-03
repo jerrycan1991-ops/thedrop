@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import re
 import threading
 from collections import Counter
 
@@ -129,21 +130,75 @@ _ALIASES = {
 }
 
 
-def _clean(surface: str) -> str:
+#: US state abbreviations as wire copy writes them. Applied ONLY to PLACE entities,
+#: because most are also ordinary words or names -- "Mass", "Wash", "Ore" -- and mapping
+#: them wherever they appear would rewrite people into states.
+#:
+#: Deliberately omits the genuinely ambiguous ones even as places: "La", "Del", "Ga",
+#: "Md", "Pa", "Va", "Ind". A wrong expansion here creates a shared entity between two
+#: unrelated stories, which is the precision failure the guard exists to prevent.
+_STATE_ABBREVIATIONS = {
+    "Ala": "Alabama",
+    "Ariz": "Arizona",
+    "Ark": "Arkansas",
+    "Calif": "California",
+    "Colo": "Colorado",
+    "Conn": "Connecticut",
+    "Fla": "Florida",
+    "Ill": "Illinois",
+    "Kan": "Kansas",
+    "Ky": "Kentucky",
+    "Mass": "Massachusetts",
+    "Mich": "Michigan",
+    "Minn": "Minnesota",
+    "Miss": "Mississippi",
+    "Mo": "Missouri",
+    "Mont": "Montana",
+    "Neb": "Nebraska",
+    "Nev": "Nevada",
+    "Okla": "Oklahoma",
+    "Ore": "Oregon",
+    "Tenn": "Tennessee",
+    "Tex": "Texas",
+    "Vt": "Vermont",
+    "Wash": "Washington",
+    "Wis": "Wisconsin",
+    "Wyo": "Wyoming",
+}
+
+#: A single letter, a period, whitespace, then another capital: "D. C" from "D.C.".
+_SPLIT_INITIALS = re.compile("([A-Z])[.][ ]+(?=[A-Z])")
+
+
+def _clean(surface: str, entity_type: str = "OTHER") -> str:
     """Repair the tagger's spelling of an entity, and nothing more.
 
     Conservative on purpose. Everything here either removes characters the model added
-    (stray punctuation, a leading article) or corrects a spelling the model produced
-    that no source wrote.
+    or corrects a spelling the model produced that no source wrote.
     """
     text = surface.strip()
-    # The aggregator inserts spaces around punctuation it rejoined: "U. S", "O ' Brien".
+
+    # Wordpiece continuations that survived aggregation. The tagger emitted
+    # "##air Olajuwan Tidwell" and "##ine Ferris Pirro" -- an entity that began
+    # mid-word, so its first token is half of one. The fragment is DROPPED rather than
+    # stripped to "air": half a first name is not a name, and keeping it would let two
+    # unrelated people match on a shared fragment.
+    tokens = [tok for tok in text.split() if not tok.startswith("##")]
+    text = " ".join(tokens)
+
+    # The aggregator inserts spaces around punctuation it rejoined: "U. S", "O ' Brien",
+    # "Washington, D. C".
     text = text.replace(" .", ".").replace(" '", "'").replace(" - ", "-")
+    text = _SPLIT_INITIALS.sub(lambda m: m.group(1) + ".", text)
     text = text.strip(".,;:!?\"'()[]").strip()
+
     for article in ("the ", "The ", "a ", "A ", "an ", "An "):
         if text.startswith(article):
             text = text[len(article) :]
     text = text.strip()
+
+    if entity_type == "PLACE" and text in _STATE_ABBREVIATIONS:
+        return _STATE_ABBREVIATIONS[text]
     return _ALIASES.get(text, text)
 
 
@@ -165,10 +220,10 @@ def extract(text: str) -> list[dict[str, object]]:
     for prediction in predictions:
         if float(prediction.get("score", 0.0)) < threshold:
             continue
-        name = _clean(str(prediction.get("word", "")))
+        entity_type = LABEL_TO_TYPE.get(str(prediction.get("entity_group", "")), "OTHER")
+        name = _clean(str(prediction.get("word", "")), entity_type)
         if len(name) < 2:
             continue
-        entity_type = LABEL_TO_TYPE.get(str(prediction.get("entity_group", "")), "OTHER")
         counts[(name, entity_type)] += 1
 
     total = sum(counts.values())

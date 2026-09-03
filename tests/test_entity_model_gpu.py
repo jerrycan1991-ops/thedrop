@@ -25,13 +25,14 @@ sys.path.insert(0, str(REPO_ROOT / "services" / "agent-runner"))
 
 from agent import entities  # noqa: E402
 
-pytestmark = [
-    pytest.mark.gpu,
-    pytest.mark.skipif(
-        not entities.is_available(),
-        reason="model stack not installed (uv sync --group desktop-ml)",
-    ),
-]
+#: Only the tests that RUN the model need it. The surface-form repairs at the bottom
+#: are pure functions and must keep running on a machine without torch -- they were
+#: found in production output and are exactly what a CI run should protect.
+_needs_model = pytest.mark.skipif(
+    not entities.is_available(),
+    reason="model stack not installed (uv sync --group desktop-ml)",
+)
+pytestmark = pytest.mark.gpu
 
 OHIO = "A shooting in Dayton, Ohio left three dead. Police in Dayton said the suspect acted alone."
 NEVADA = "A shooting in Reno, Nevada left three dead. Police in Reno said the suspect acted alone."
@@ -41,6 +42,7 @@ def names(text: str) -> set[str]:
     return {str(e["name"]) for e in entities.extract(text)}
 
 
+@_needs_model
 def test_two_shootings_in_different_states_share_no_entity() -> None:
     """The guard's whole reason for existing.
 
@@ -53,6 +55,7 @@ def test_two_shootings_in_different_states_share_no_entity() -> None:
     assert overlap == set(), f"the guard would have merged two different events via {overlap}"
 
 
+@_needs_model
 def test_the_same_event_reported_twice_does_share_entities() -> None:
     """The guard must not block everything. A second account of the same event has to
     keep enough in common to clear it, or nothing ever clusters."""
@@ -61,6 +64,7 @@ def test_the_same_event_reported_twice_does_share_entities() -> None:
     assert names(OHIO) & names(other_account)
 
 
+@_needs_model
 def test_people_organisations_and_places_are_typed() -> None:
     found = {
         str(e["name"]): str(e["type"])
@@ -74,6 +78,7 @@ def test_people_organisations_and_places_are_typed() -> None:
     assert found.get("Washington") == "PLACE"
 
 
+@_needs_model
 def test_salience_ranks_the_repeatedly_mentioned_first() -> None:
     """Salience is centrality, not model confidence. A name mentioned once in passing
     should not gate a merge, however confidently it was tagged."""
@@ -86,11 +91,65 @@ def test_salience_ranks_the_repeatedly_mentioned_first() -> None:
     assert extracted[0]["salience"] > 0.5
 
 
+@_needs_model
 def test_text_with_no_entities_returns_nothing_rather_than_noise() -> None:
     """An empty result is a valid outcome the VPS records as 'processed'. Returning
     junk here would put junk in the guard."""
     assert entities.extract("It rained heavily and the meeting was postponed.") == []
 
 
+@_needs_model
 def test_empty_text_does_not_reach_the_model() -> None:
     assert entities.extract("   ") == []
+
+
+# ------------------------------------------------------- surface form repairs
+
+# These need no model: `_clean` is a pure function. They live here because they were
+# found by reading real extracted entities, and the strings are verbatim from that
+# output.
+
+
+@pytest.mark.parametrize(
+    ("raw", "kind", "expected"),
+    [
+        ("##air Olajuwan Tidwell", "PERSON", "Olajuwan Tidwell"),
+        ("##ine Ferris Pirro", "PERSON", "Ferris Pirro"),
+        ("##l Andrew Green", "PERSON", "Andrew Green"),
+    ],
+    ids=["leading fragment", "split forename", "single letter"],
+)
+def test_wordpiece_fragments_are_dropped_not_kept(raw: str, kind: str, expected: str) -> None:
+    """The tagger emits "##air Olajuwan Tidwell" when an entity begins mid-word, so its
+    first token is half of one. Dropped rather than stripped to "air": half a first name
+    is not a name, and two unrelated people could match on a shared fragment.
+    """
+    assert entities._clean(raw, kind) == expected
+
+
+def test_an_entity_that_is_only_a_fragment_disappears() -> None:
+    assert entities._clean("##only", "PERSON") == ""
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("Washington, D. C", "Washington, D.C"), ("U. S", "United States")],
+    ids=["initials after a comma", "the country"],
+)
+def test_split_initials_are_rejoined(raw: str, expected: str) -> None:
+    """The aggregator rejoins "D.C." as "D. C". The period fix alone missed it, because
+    the space follows a period rather than preceding one."""
+    assert entities._clean(raw, "PLACE") == expected
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("Mo", "Missouri"), ("Wyo", "Wyoming")])
+def test_state_abbreviations_expand_for_places(raw: str, expected: str) -> None:
+    """Wire copy writes "Kansas City, Mo." A two-letter place that no other article
+    spells the same way cannot license a join with anything."""
+    assert entities._clean(raw, "PLACE") == expected
+
+
+def test_state_abbreviations_do_not_expand_for_people() -> None:
+    """Most are ordinary words or surnames. Expanding "Mass" wherever it appears would
+    rewrite a person into a state, and give two unrelated stories a shared entity."""
+    assert entities._clean("Mass", "PERSON") == "Mass"
