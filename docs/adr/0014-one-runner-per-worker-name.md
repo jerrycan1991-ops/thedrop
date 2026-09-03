@@ -33,10 +33,14 @@ in which this is free to fix is now.
 
 ## Options considered
 
-1. **Fix `install-task.ps1` only.** Stop the task before re-registering. Necessary, and
-   it would have prevented one of the two orphans — but not the hand-started one, and
-   not a runner launched from a second checkout. A guard that only covers the path we
-   happened to observe is not a guard.
+1. **Fix `install-task.ps1` only.** Stop the task before re-registering. Necessary, but
+   not sufficient on two counts: it would not have caught the hand-started orphan or a
+   runner launched from a second checkout, and — measured while implementing this —
+   **`Stop-ScheduledTask` does not stop the runner at all.** It kills the PowerShell
+   wrapper; the `uv run python -m agent` grandchild survives. The task reported `Ready`
+   while four runner processes kept polling. A guard that only covers the path we
+   happened to observe, using a mechanism that does not do what it appears to, is not a
+   guard.
 2. **A pidfile.** Needs stale detection, and PID reuse makes that unreliable: a stale
    file naming a PID that now belongs to something else either blocks a legitimate
    start or is ignored and blocks nothing.
@@ -51,10 +55,14 @@ in which this is free to fix is now.
 
 Option 3, plus option 1. The runner takes an exclusive OS lock keyed on `WORKER_NAME`
 before entering the claim loop and exits `3` if another process holds it.
-`install-task.ps1` stops a running task before re-registering, and reports any runner
-process it did not start rather than killing one it cannot attribute — a second runner
-may legitimately be serving a different `WORKER_NAME`, which is not visible from a
-command line.
+
+Because stopping the task does not stop the runner, `install-task.ps1` also stops the
+*process* — via `Stop-Runner` in `infrastructure/desktop/runner-control.ps1`, both
+before re-registering and on `-Uninstall`. Attribution comes from the lock file itself,
+which records which pid owns which worker name, so it stops exactly the runner holding
+the name being configured. It deliberately does not pattern-match on `-m agent`: a
+second runner may legitimately be serving a different `WORKER_NAME`, which is invisible
+from a command line. Runners it cannot attribute are reported, not killed.
 
 Option 4 is **deliberately not built**. It is recorded here so the gap is a decision
 rather than an oversight.
@@ -82,6 +90,9 @@ rather than an oversight.
 - **Two machines sharing one token remain unguarded.** If a second desktop is ever
   added, that must be closed first — and the fix is option 4, not a wider local lock,
   which cannot see another machine by construction.
+- **`Stop-ScheduledTask` alone is now a documented trap**, in the runner README and in
+  what `install-task.ps1` prints on exit. It was previously advertised as the way to
+  stop the runner, which is how at least one orphan survived a re-registration.
 - The lock file is never unlinked. Deleting it on release would let a second runner
   create and lock a *new* file at the same path while the first still held the old
   inode: two runners, both holding "the" lock.

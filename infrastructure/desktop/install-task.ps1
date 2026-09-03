@@ -52,6 +52,8 @@ if (-not $PSBoundParameters.ContainsKey('RepoRoot') -or [string]::IsNullOrWhiteS
     $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 }
 
+. (Join-Path $PSScriptRoot "runner-control.ps1")
+
 if ($Uninstall) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -60,6 +62,11 @@ if ($Uninstall) {
     } else {
         Write-Output "No task named '$TaskName' to remove."
     }
+    # Unregistering the task does not stop the runner it started, for the same reason
+    # stopping the task does not. Without this, `-Uninstall` leaves a runner claiming
+    # jobs with no task to explain where it came from.
+    $stopped = Stop-Runner -Name $WorkerName
+    if ($stopped) { Write-Output "Stopped the runner that held '$WorkerName' (pid $($stopped.ProcessId))." }
     Write-Output "WORKER_TOKEN is still in your user environment. Clear it with:"
     Write-Output '  [Environment]::SetEnvironmentVariable("WORKER_TOKEN", $null, "User")'
     return
@@ -119,20 +126,28 @@ $settings = New-ScheduledTaskSettingsSet `
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
-# Stop a running instance BEFORE re-registering. `Register-ScheduledTask -Force`
-# replaces the task DEFINITION but does not touch a process already running under the
-# old one -- so re-pointing the task at a new repo root left the previous runner alive,
-# claiming jobs under the same worker name, indefinitely. That is how two orphans came
-# to be polling as desktop-4070 for a day.
+# Stop a running instance BEFORE re-registering, in two steps, because neither alone
+# is sufficient:
+#
+#   1. `Register-ScheduledTask -Force` replaces the task DEFINITION but does not touch a
+#      process running under the old one -- so re-pointing the task at a new repo root
+#      left the previous runner alive, claiming under the same worker name, forever.
+#   2. `Stop-ScheduledTask` does not stop the runner either. It kills the powershell
+#      wrapper; the `uv run python -m agent` grandchild survives. Observed directly:
+#      the task reported `Ready` while four runner processes kept polling.
+#
+# Step 2 is why Stop-Runner exists -- it goes by the single-instance lock, so it stops
+# the process that actually owns THIS worker name and nothing else.
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Write-Output "Stopping the existing task before re-registering..."
     try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch {}
-    # Stop-ScheduledTask returns before the process has actually gone.
     for ($i = 0; $i -lt 20; $i++) {
         if ((Get-ScheduledTask -TaskName $TaskName).State -ne 'Running') { break }
         Start-Sleep -Milliseconds 250
     }
 }
+$stopped = Stop-Runner -Name $WorkerName
+if ($stopped) { Write-Output "Stopped the runner that held '$WorkerName' (pid $($stopped.ProcessId))." }
 
 # Anything still running was not started by this task, so this script must not assume
 # it owns it. Reported rather than killed: a second runner may legitimately be serving
@@ -167,5 +182,6 @@ Write-Output "Task state: $state"
 Write-Output ""
 Write-Output "Log:    $env:LOCALAPPDATA\thedrop\logs\agent-runner.log"
 Write-Output "Status: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"
-Write-Output "Stop:   Stop-ScheduledTask -TaskName '$TaskName'"
+# NOT Stop-ScheduledTask on its own: that kills the wrapper and leaves the runner.
+Write-Output "Stop:   . .\infrastructure\desktop\runner-control.ps1 ; Stop-Runner -Name '$WorkerName'"
 Write-Output "Remove: .\install-task.ps1 -Uninstall"

@@ -107,7 +107,7 @@ Three settings that matter:
 |---|---|
 | Runs as your user, not SYSTEM | Needs your `uv` and nvm PATH, and holds a credential that should not be available to every process |
 | `ExecutionTimeLimit` = 0 | The default three-day limit would silently kill a runner meant to run forever |
-| `MultipleInstances IgnoreNew` | Two runners on one token both claim jobs. The VPS tolerates it (`SKIP LOCKED`), but it doubles the poll rate and makes `current_job_count` meaningless |
+| `MultipleInstances IgnoreNew` | Stops the *task* starting twice. It cannot stop a runner started any other way, so it is a convenience, not the guard — the runner's own lock is (ADR-0014) |
 
 Restart is capped at 3 attempts, 5 minutes apart. The runner already survives an
 unreachable VPS on its own, backing off to 120 s — if it has *exited* three times in
@@ -120,6 +120,23 @@ Get-ScheduledTask -TaskName "TheDrop Agent Runner" | Get-ScheduledTaskInfo
 ```bash
 powershell -File infrastructure\desktop\install-task.ps1 -Uninstall
 ```
+
+### Stopping it
+
+**`Stop-ScheduledTask` does not stop the runner.** It kills the PowerShell wrapper; the
+`uv run python -m agent` grandchild survives and keeps claiming. Observed directly: the
+task reported `Ready` while four runner processes kept polling. That is how orphans
+accumulate. Use:
+
+```bash
+. .\infrastructure\desktop\runner-control.ps1 ; Stop-Runner -Name desktop-4070
+```
+
+`Stop-Runner` goes by the single-instance lock, so it stops the process that actually
+owns that worker name and nothing else — a second runner serving a *different*
+`WORKER_NAME` is legitimate and is left alone. `Get-RunnerLock -Name <name>` reports the
+holder without stopping it. `install-task.ps1` calls `Stop-Runner` itself, both before
+re-registering and on `-Uninstall`.
 
 ## Adding a handler
 
