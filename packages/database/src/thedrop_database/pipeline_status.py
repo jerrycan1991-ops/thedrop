@@ -209,3 +209,9 @@ if __name__ == "__main__":
         sys.exit(show_clusters() if args.clusters else main())
     except OperationalError as exc:
         sys.exit(_explain_connection_failure(exc))
+    except BrokenPipeError:
+        # `| head` closes the pipe early. Python then reports it again while flushing at
+        # exit, so stdout is redirected to devnull first -- otherwise a perfectly normal
+        # `| head -40` ends in a traceback that looks like a defect.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
