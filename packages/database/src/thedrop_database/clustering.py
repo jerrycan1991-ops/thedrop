@@ -87,20 +87,77 @@ def overexposure_threshold(
     return max(min_floor, math.ceil(corpus * max_fraction))
 
 
+def _exposure_groups(named: list[tuple[int, str, str]]) -> dict[int, int]:
+    """Map each entity to the id whose exposure it shares.
+
+    "Donald Trump" and "Trump" are one person, stored as two rows. At 393 articles the
+    ceiling was 40: `Trump` appeared in 97 and was correctly excluded, while
+    `Donald Trump` appeared in 18 and was admitted. The same entity was both blocked and
+    allowed depending on which surface form an article happened to use, so the ceiling
+    leaked under an alias -- and that costs PRECISION, which is the one thing the guard
+    exists to protect.
+
+    The rule is deliberately narrow: same type, and one name is a whole-word SUFFIX of
+    the other. It fires only when the corpus actually contains both forms, so
+    "John Smith" and "Jane Smith" are not grouped -- neither is a suffix of the other,
+    and nothing named "Smith" need exist.
+
+    Whole-word, not substring: "Ian" must not absorb "Iran".
+
+    This changes only how exposure is COUNTED. It does not claim the rows are the same
+    entity, does not merge them, and cannot cause a wrong join -- its only effect is to
+    exclude more, which is the safe direction (ADR-0015).
+    """
+    by_key: dict[tuple[str, str], int] = {}
+    for entity_id, name, kind in named:
+        by_key.setdefault((kind, " ".join(name.lower().split())), entity_id)
+
+    group: dict[int, int] = {}
+    for entity_id, name, kind in named:
+        tokens = name.lower().split()
+        target = entity_id
+        # Longest suffix first: "Donald Trump" prefers "Trump" over nothing, and a
+        # three-part name prefers the two-part form it actually contains.
+        for start in range(1, len(tokens)):
+            candidate = by_key.get((kind, " ".join(tokens[start:])))
+            if candidate is not None and candidate != entity_id:
+                target = candidate
+                break
+        group[entity_id] = target
+    return group
+
+
 def overexposed_entity_ids(
     db: Session,
     *,
     max_fraction: float = DEFAULT_MAX_DOC_FRACTION,
     min_floor: int = DEFAULT_MIN_DOC_FLOOR,
 ) -> set[int]:
-    """Entities that appear in too many articles to mean anything on their own."""
+    """Entities that appear in too many articles to mean anything on their own.
+
+    Exposure is counted per GROUP, not per row, so an over-exposed name cannot slip
+    through under a longer form of itself -- see `_exposure_groups`.
+    """
     threshold = overexposure_threshold(db, max_fraction=max_fraction, min_floor=min_floor)
+
     rows = db.execute(
-        select(RawArticleEntity.entity_id)
-        .group_by(RawArticleEntity.entity_id)
-        .having(func.count(func.distinct(RawArticleEntity.raw_article_id)) > threshold)
-    ).scalars()
-    return set(rows)
+        select(
+            Entity.id,
+            Entity.canonical_name,
+            Entity.entity_type,
+            func.count(func.distinct(RawArticleEntity.raw_article_id)).label("df"),
+        )
+        .join(RawArticleEntity, RawArticleEntity.entity_id == Entity.id)
+        .group_by(Entity.id, Entity.canonical_name, Entity.entity_type)
+    ).all()
+
+    group = _exposure_groups([(r.id, r.canonical_name, r.entity_type) for r in rows])
+
+    totals: dict[int, int] = {}
+    for row in rows:
+        totals[group[row.id]] = totals.get(group[row.id], 0) + int(row.df)
+
+    return {row.id for row in rows if totals[group[row.id]] > threshold}
 
 
 #: Domain labels that are never a publisher's identity. Without this, "com" or "org"

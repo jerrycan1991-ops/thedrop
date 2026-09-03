@@ -630,3 +630,70 @@ def test_a_merged_story_is_not_considered_again(db: Session, provider: Provider)
 
     assert first_pass
     assert second_pass == [], "consolidation repeated itself on an already-merged story"
+
+
+# --------------------------------------------------------------- alias exposure
+
+
+def test_a_common_entity_cannot_slip_through_under_a_longer_name(
+    db: Session, provider: Provider
+) -> None:
+    """The leak, reproduced.
+
+    At 393 articles the ceiling was 40. "Trump" appeared in 97 and was correctly
+    excluded; "Donald Trump" appeared in 18 and was admitted. The same person was both
+    blocked and allowed depending on which surface form an article used, so the ceiling
+    leaked under an alias — and that costs precision, which is the one thing the guard
+    exists to protect.
+    """
+    src = named_source(db, "pytest-alias.invalid")
+    short = exact_entity(db, "pytest-trump", "PERSON")
+    long_form = exact_entity(db, "pytest-donald pytest-trump", "PERSON")
+
+    # The short form is everywhere; the long form is rare.
+    for n in range(400, 408):
+        link(db, article_from(db, provider, src, n), short)
+    rare = article_from(db, provider, src, 420)
+    link(db, rare, long_form)
+
+    excluded = overexposed_entity_ids(db, max_fraction=0.001, min_floor=4)
+
+    assert short.id in excluded, "fixture is wrong: the short form should be over-exposed"
+    assert long_form.id in excluded, "the long form slipped through under an alias"
+    assert guard_entity_ids(db, rare.id, max_fraction=0.001, min_floor=4) == set()
+
+
+def test_grouping_needs_a_whole_word_suffix(db: Session, provider: Provider) -> None:
+    """ "Ian" must not be absorbed by "Iran". Substring matching would group unrelated
+    entities and quietly exclude discriminative ones."""
+    src = named_source(db, "pytest-alias2.invalid")
+    country = exact_entity(db, "pytest-iran", "PLACE")
+    person = exact_entity(db, "pytest-ian", "PLACE")
+
+    for n in range(430, 438):
+        link(db, article_from(db, provider, src, n), country)
+    rare = article_from(db, provider, src, 440)
+    link(db, rare, person)
+
+    excluded = overexposed_entity_ids(db, max_fraction=0.001, min_floor=4)
+
+    assert country.id in excluded
+    assert person.id not in excluded, "a substring match absorbed an unrelated entity"
+
+
+def test_two_people_sharing_a_surname_are_not_grouped(db: Session, provider: Provider) -> None:
+    """The rule fires only when the corpus contains BOTH forms. Nothing named
+    "pytest-smith" exists here, so these two stay independent."""
+    src = named_source(db, "pytest-alias3.invalid")
+    john = exact_entity(db, "pytest-john pytest-smith", "PERSON")
+    jane = exact_entity(db, "pytest-jane pytest-smith", "PERSON")
+
+    for n in range(450, 458):
+        link(db, article_from(db, provider, src, n), john)
+    rare = article_from(db, provider, src, 460)
+    link(db, rare, jane)
+
+    excluded = overexposed_entity_ids(db, max_fraction=0.001, min_floor=4)
+
+    assert john.id in excluded
+    assert jane.id not in excluded, "unrelated people were grouped by a shared surname"

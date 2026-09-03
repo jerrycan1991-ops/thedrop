@@ -78,3 +78,22 @@ Separately, tokenizer artifacts are normalised at extraction: "U. S" → "United
   now, but a corpus two orders of magnitude larger may want a different rule.
 - Entities extracted before this change carry the old spellings. They need
   re-extraction to benefit, which is a backfill, not an automatic correction.
+
+## Amendment, same day: exposure is counted per group, not per row
+
+At 393 articles the ceiling was 40. `Trump` appeared in 97 and was correctly excluded;
+`Donald Trump` appeared in 18 and was admitted. One person, two rows, and the ceiling
+leaked under the longer form — costing **precision**, which is the one thing the guard
+protects.
+
+Exposure is therefore summed across entities of the same type where one name is a
+whole-word suffix of the other. The rule is narrow on purpose: it fires only when the
+corpus contains both forms, so two people sharing a surname are not grouped, and
+whole-word matching keeps `Ian` out of `Iran`. It changes only how exposure is COUNTED —
+the rows are not merged and nothing asserts they are the same entity — so its only
+possible effect is to exclude more, which is the safe direction.
+
+`America` against `United States` is not a suffix relation and cannot be caught this
+way, so it is a named equivalence in the extractor's alias map alongside the tokenizer
+repairs. That one is an editorial judgement and is labelled as such: on a US news site a
+bare "America" means the United States.

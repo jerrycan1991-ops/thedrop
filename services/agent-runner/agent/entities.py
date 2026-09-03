@@ -114,6 +114,18 @@ _ALIASES = {
     "U. K": "United Kingdom",
     "U.K": "United Kingdom",
     "UK": "United Kingdom",
+    # Not a tokenizer artifact but an editorial judgement, and stated as one. On a US
+    # news site a bare "America" means the United States; it was stored as a separate
+    # entity from "United States" (18 articles against 118), which split one country in
+    # two and let the smaller form slip under the guard's exposure ceiling.
+    #
+    # The suffix rule in `clustering._exposure_groups` cannot catch this -- "America" is
+    # not a suffix of "United States" -- so it has to be named. Kept to forms with no
+    # plausible second reading: "Bank of America" is a longer name and does not match.
+    "America": "United States",
+    "United States of America": "United States",
+    "U.S.A.": "United States",
+    "USA.": "United States",
 }
 
 
