@@ -102,6 +102,85 @@ class RiskTier(StrEnum):
     HIGH = "high"
 
 
+class ClaimType(StrEnum):
+    """DATABASE.md `claims.claim_type`. See PIPELINE.md §10."""
+
+    FACT = "FACT"
+    CLAIM = "CLAIM"
+    ALLEGATION = "ALLEGATION"
+    OPINION = "OPINION"
+    ANALYSIS = "ANALYSIS"
+    PREDICTION = "PREDICTION"
+    PROJECTION = "PROJECTION"
+    OFFICIAL_STATEMENT = "OFFICIAL_STATEMENT"
+    UNVERIFIED = "UNVERIFIED"
+
+
+#: These three assert that someone said or alleged something, not that it happened.
+#: PIPELINE.md §11: "Person X claims Y" must never render as "Y happened" -- that
+#: starts with the schema refusing to lose who made the assertion.
+ATTRIBUTION_REQUIRED_CLAIM_TYPES: frozenset[str] = frozenset(
+    {ClaimType.CLAIM, ClaimType.ALLEGATION, ClaimType.OFFICIAL_STATEMENT}
+)
+
+
+class VerificationStatus(StrEnum):
+    """DATABASE.md `claims.verification_status`. See PIPELINE.md §11."""
+
+    UNVERIFIED = "unverified"
+    SINGLE_SOURCE = "single_source"
+    CORROBORATED = "corroborated"
+    AUTHORITATIVE = "authoritative"
+    DISPUTED = "disputed"
+    REFUTED = "refuted"
+
+
+#: CLAUDE.md: "A claim may only be rendered as fact when its verification_status is
+#: corroborated or authoritative."
+RENDERABLE_AS_FACT: frozenset[str] = frozenset(
+    {VerificationStatus.CORROBORATED, VerificationStatus.AUTHORITATIVE}
+)
+
+
+class EvidenceStance(StrEnum):
+    """DATABASE.md `claim_evidence.stance`."""
+
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    CONTEXT = "context"
+
+
+class AiRunPurpose(StrEnum):
+    """DATABASE.md `ai_runs.purpose`."""
+
+    EXTRACT = "extract"
+    SCORE = "score"
+    VERIFY = "verify"
+    WRITE = "write"
+    QA = "qa"
+    HEADLINE = "headline"
+    IMAGE_PROMPT = "image_prompt"
+    VIDEO_SCRIPT = "video_script"
+    OTHER = "other"
+
+
+class AiRunProvider(StrEnum):
+    """DATABASE.md `ai_runs.provider`."""
+
+    ANTHROPIC = "anthropic"
+    OLLAMA = "ollama"
+    OTHER = "other"
+
+
+class AiRunStatus(StrEnum):
+    """DATABASE.md `ai_runs.status`."""
+
+    OK = "ok"
+    ERROR = "error"
+    REFUSED = "refused"
+    INVALID_OUTPUT = "invalid_output"
+
+
 class CorrectionType(StrEnum):
     CORRECTION = "correction"
     CLARIFICATION = "clarification"

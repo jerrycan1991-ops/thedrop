@@ -20,6 +20,7 @@ from thedrop_database.models.affiliate import (
     AffiliateProduct,
 )
 from thedrop_database.models.auth import AuditLog, Role, User, user_roles
+from thedrop_database.models.claim import AiRun, Claim, ClaimEvidence, PromptVersion
 from thedrop_database.models.content import (
     Article,
     ArticleSourceRef,
@@ -55,17 +56,21 @@ __all__ = [
     "AffiliateLinkHealthCheck",
     "AffiliateMerchant",
     "AffiliateProduct",
+    "AiRun",
     "Article",
     "ArticleSourceRef",
     "ArticleVersion",
     "AuditLog",
     "Category",
+    "Claim",
+    "ClaimEvidence",
     "ClusterLabel",
     "Correction",
     "Entity",
     "Job",
     "MediaAsset",
     "NewsletterSubscriber",
+    "PromptVersion",
     "Provider",
     "RawArticle",
     "RawArticleEntity",
