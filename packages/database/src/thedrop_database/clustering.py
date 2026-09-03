@@ -310,6 +310,53 @@ def _update_centroid(db: Session, story_id: int, embedding: list[float]) -> None
     story.centroid = [(previous[i] * n + embedding[i]) / members for i in range(len(embedding))]
 
 
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norm if norm else 0.0
+
+
+def _spans_unrelated_stories(
+    db: Session,
+    matches: list[tuple[int, float, set[int]]],
+    *,
+    join_threshold: float,
+) -> bool:
+    """Whether an article qualifies to join two stories that are not about each other.
+
+    This is what a digest looks like from the inside. NPR publishes an "Up First" every
+    morning covering several unrelated events; it is similar enough to each, and shares
+    a discriminative entity with each, so it passes the guard against all of them. It
+    joined the ICE story in the first real run while the shutdown it also covered was a
+    separate story two rows down.
+
+    Letting it join is worse than it sounds. A digest is not a second SOURCE for a
+    story -- it is a paragraph in a summary -- and a later verification step counting
+    members would read it as corroboration.
+
+    Two stories that are themselves similar are not evidence of a digest; they are one
+    event that clustering has under-split, and the article should join the better of
+    them. So the test is mutual DISsimilarity between the matched stories, using the
+    same threshold: if they are close enough that they would merge with each other,
+    they are one story.
+    """
+    if len(matches) < 2:
+        return False
+
+    centroids: dict[int, list[float]] = {}
+    for story_id, _, _ in matches:
+        story = db.get(Story, story_id)
+        if story is not None and story.centroid is not None:
+            centroids[story_id] = list(story.centroid)
+
+    ids = list(centroids)
+    for i, first in enumerate(ids):
+        for second in ids[i + 1 :]:
+            if _cosine(centroids[first], centroids[second]) < join_threshold:
+                return True
+    return False
+
+
 def cluster_article(
     db: Session,
     article: RawArticle,
@@ -335,10 +382,7 @@ def cluster_article(
     if not embedding:
         raise ValueError(f"article {article.id} has no embedding")
 
-    best_id: int | None = None
-    best_similarity = 0.0
-    shared: set[int] = set()
-
+    matches: list[tuple[int, float, set[int]]] = []
     for story_id, similarity in _candidates(
         db, embedding, window_hours=window_hours, limit=candidate_limit
     ):
@@ -350,8 +394,15 @@ def cluster_article(
             db, article.id, story_id, max_fraction=max_fraction, min_floor=min_floor
         )
         if overlap:
-            best_id, best_similarity, shared = story_id, similarity, overlap
-            break
+            matches.append((story_id, similarity, overlap))
+
+    digest = _spans_unrelated_stories(db, matches, join_threshold=join_threshold)
+
+    best_id: int | None = None
+    best_similarity = 0.0
+    shared: set[int] = set()
+    if matches and not digest:
+        best_id, best_similarity, shared = matches[0]
 
     now = datetime.now(UTC)
 
@@ -380,7 +431,11 @@ def cluster_article(
             article_id=article.id,
             story_id=story.id,
             joined=False,
-            reason="no candidate cleared both the similarity threshold and the entity guard",
+            reason=(
+                "spans unrelated stories; treated as a digest"
+                if digest
+                else "no candidate cleared both the similarity threshold and the entity guard"
+            ),
         )
 
     db.add(

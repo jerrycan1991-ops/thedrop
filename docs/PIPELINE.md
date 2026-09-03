@@ -95,8 +95,11 @@ Incremental, online:
 
 1. For each new embedding, query `stories.centroid` for nearest clusters active in the last 48 h (`ORDER BY centroid <=> $1 LIMIT 10`).
 2. If best cosine similarity ≥ `CLUSTER_JOIN_THRESHOLD` (default 0.82) **and** entity overlap ≥ 1 shared salient entity → join; update centroid as a running mean.
-3. Else create a new `story`.
-4. Periodic consolidation pass (HDBSCAN over the last 24 h) merges clusters that drifted apart, and splits clusters whose intra-similarity collapsed.
+3. An article that qualifies to join two stories which are **not similar to each
+   other** is a digest — a roundup covering several unrelated events — and joins
+   neither. It is not a second source for any of them.
+4. Else create a new `story`.
+5. Periodic consolidation pass (HDBSCAN over the last 24 h) merges clusters that drifted apart, and splits clusters whose intra-similarity collapsed.
 
 Entity overlap is required because embeddings alone happily merge "shooting in Ohio" with "shooting in Nevada". That is a correctness guard, not an optimization.
 

@@ -363,9 +363,7 @@ def test_two_near_identical_articles_about_different_events_do_not_merge(
     assert first.story_id != second.story_id
 
 
-def test_two_accounts_of_the_same_event_do_merge(
-    db: Session, provider: Provider
-) -> None:
+def test_two_accounts_of_the_same_event_do_merge(db: Session, provider: Provider) -> None:
     """The guard must not be so strict that nothing clusters."""
     src = named_source(db, "pytest-wire2.invalid")
     shared_entity = exact_entity(db, "pytest-dayton2", "PLACE")
@@ -416,9 +414,7 @@ def test_membership_and_centroid_are_recorded(db: Session, provider: Provider) -
     founded = cluster_article(db, a, join_threshold=0.5)
     cluster_article(db, b, join_threshold=0.5)
 
-    members = db.scalars(
-        select(StorySource).where(StorySource.story_id == founded.story_id)
-    ).all()
+    members = db.scalars(select(StorySource).where(StorySource.story_id == founded.story_id)).all()
     assert len(members) == 2
     assert any(m.is_primary for m in members)
     assert any(m.similarity is not None for m in members)
@@ -429,9 +425,7 @@ def test_membership_and_centroid_are_recorded(db: Session, provider: Provider) -
     assert story.source_count == 1, "both articles came from one source"
 
 
-def test_independent_source_count_is_never_inferred(
-    db: Session, provider: Provider
-) -> None:
+def test_independent_source_count_is_never_inferred(db: Session, provider: Provider) -> None:
     """ADR-0013: nothing may infer independence from source identity. Forty outlets
     carrying one wire story are forty sources and one witness, so a corroboration rule
     downstream must not find a number here that was guessed."""
@@ -446,9 +440,7 @@ def test_independent_source_count_is_never_inferred(
     assert story.independent_source_count == 0
 
 
-def test_an_article_without_entities_founds_its_own_story(
-    db: Session, provider: Provider
-) -> None:
+def test_an_article_without_entities_founds_its_own_story(db: Session, provider: Provider) -> None:
     """No discriminative entity means nothing says which event it belongs to. Founding a
     story is the correct answer, not an error."""
     src = named_source(db, "pytest-wire6.invalid")
@@ -461,3 +453,79 @@ def test_an_article_without_entities_founds_its_own_story(
 
     assert not orphan.joined
     assert orphan.story_id != founded.story_id
+
+
+# ------------------------------------------------------------------- digests
+
+
+def test_an_article_spanning_unrelated_stories_joins_neither(
+    db: Session, provider: Provider
+) -> None:
+    """The NPR "Up First" case, from the first real clustering run.
+
+    A morning digest covers several unrelated events, so it is similar enough to each
+    and shares a discriminative entity with each — and it passed the guard against the
+    ICE story while the shutdown it also covered sat in a separate story.
+
+    Letting it join is worse than it sounds: a digest is not a second SOURCE for a
+    story, it is a paragraph in a summary, and a verification step counting members
+    would read it as corroboration.
+    """
+    src = named_source(db, "pytest-digest.invalid")
+    ice = exact_entity(db, "pytest-ice", "ORG")
+    congress = exact_entity(db, "pytest-congress", "ORG")
+
+    # Two unrelated stories: orthogonal vectors, different entities.
+    ice_article = embedded_article(db, provider, src, 200, vector(21))
+    shutdown_article = embedded_article(db, provider, src, 201, vector(300))
+    link(db, ice_article, ice)
+    link(db, shutdown_article, congress)
+    first = cluster_article(db, ice_article, join_threshold=0.5)
+    second = cluster_article(db, shutdown_article, join_threshold=0.5)
+    assert first.story_id != second.story_id, "fixture is wrong: these should be separate"
+
+    # The digest sits between them and mentions both.
+    digest = embedded_article(db, provider, src, 202, vector(21, 1.0))
+    digest.embedding = [(a + b) / 2 for a, b in zip(vector(21), vector(300), strict=True)]
+    db.flush()
+    link(db, digest, ice)
+    link(db, digest, congress)
+
+    decision = cluster_article(db, digest, join_threshold=0.5)
+
+    assert not decision.joined
+    assert decision.story_id not in (first.story_id, second.story_id)
+    assert "digest" in decision.reason
+
+
+def test_matching_two_stories_about_the_same_event_still_joins(
+    db: Session, provider: Provider
+) -> None:
+    """Two similar stories are not a digest — they are one event that clustering has
+    under-split, and the article belongs to the better of them.
+
+    Without this distinction the digest rule would block exactly the joins that repair
+    over-splitting, which is the failure mode the whole design leans towards.
+    """
+    src = named_source(db, "pytest-dup.invalid")
+    shared_entity = exact_entity(db, "pytest-leipzig", "PLACE")
+
+    first_article = embedded_article(db, provider, src, 210, vector(23))
+    # 0.1 rather than 0.02: at 0.02 the cosine is 0.9998 and they merge even at a
+    # 0.999 threshold, so the fixture would not have set up the case it claims to.
+    second_article = embedded_article(db, provider, src, 211, vector(23, 0.1))
+    link(db, first_article, shared_entity)
+    link(db, second_article, shared_entity)
+
+    a = cluster_article(db, first_article, join_threshold=0.999)
+    b = cluster_article(db, second_article, join_threshold=0.999)
+    assert a.story_id != b.story_id, "fixture is wrong: these should be two stories"
+
+    # A third article about the same event, now with a threshold both can clear.
+    third = embedded_article(db, provider, src, 212, vector(23, 0.05))
+    link(db, third, shared_entity)
+
+    decision = cluster_article(db, third, join_threshold=0.5)
+
+    assert decision.joined, f"refused a legitimate join: {decision.reason}"
+    assert decision.story_id in (a.story_id, b.story_id)
