@@ -28,6 +28,7 @@ from thedrop_database.clustering import (
     overexposed_entity_ids,
     overexposure_threshold,
     shared_guard_entities,
+    story_guard_entities,
 )
 from thedrop_database.models import (
     Entity,
@@ -697,3 +698,75 @@ def test_two_people_sharing_a_surname_are_not_grouped(db: Session, provider: Pro
 
     assert john.id in excluded
     assert jane.id not in excluded, "unrelated people were grouped by a shared surname"
+
+
+# -------------------------------------------------------------- masthead leak
+
+
+def test_a_singletons_own_masthead_cannot_license_a_join(db: Session, provider: Provider) -> None:
+    """The gap found reading real output: story 26, founded by one npr.org article,
+    had "NPR" itself sitting unfiltered in its own guard set.
+
+    `guard_entity_ids` excludes an entity that is the CANDIDATE article's own masthead.
+    Nothing excluded it on the STORY side -- so a second article from a different
+    outlet merely mentioning "NPR reported..." could join a one-article NPR story on
+    the strength of NPR naming itself, not on anything the two articles actually share.
+    """
+    npr = named_source(db, "pytest-mast-npr.invalid")
+    other = named_source(db, "pytest-mast-other.invalid")
+    masthead = exact_entity(db, "pytest-mast-npr")
+
+    founder = embedded_article(db, provider, npr, 500, vector(60))
+    link(db, founder, masthead)
+    cluster_article(db, founder, join_threshold=0.999)
+
+    incoming = embedded_article(db, provider, other, 501, vector(60, 0.05))
+    link(db, incoming, masthead)
+
+    joined = cluster_article(db, incoming, join_threshold=0.5)
+
+    assert not joined.joined, "joined a singleton on the strength of its own masthead"
+
+
+def test_the_filter_lifts_once_a_second_outlet_joins(db: Session, provider: Provider) -> None:
+    """A story is not "single-publisher" forever. Once an axios.com article has
+    genuinely joined an npr.org story, "NPR" is no longer self-attribution for every
+    member -- a THIRD article citing NPR as its subject is a real signal and must not
+    be thrown away by a filter that no longer applies.
+    """
+    npr = named_source(db, "pytest-mast2-npr.invalid")
+    axios = named_source(db, "pytest-mast2-axios.invalid")
+    masthead = exact_entity(db, "pytest-mast2-npr")
+    place = exact_entity(db, "pytest-mast2-place")
+
+    founder = embedded_article(db, provider, npr, 510, vector(65))
+    link(db, founder, masthead)
+    link(db, founder, place)
+    founder_result = cluster_article(db, founder, join_threshold=0.999)
+
+    second = embedded_article(db, provider, axios, 511, vector(65, 0.02))
+    link(db, second, masthead)
+    link(db, second, place)
+    joined_second = cluster_article(db, second, join_threshold=0.5)
+    assert joined_second.joined, "fixture is wrong: the second article should join on 'place'"
+
+    guarded = story_guard_entities(db, founder_result.story_id)
+    assert masthead.id in guarded, "the filter did not lift once a second outlet joined"
+
+
+def test_a_genuine_cross_outlet_reference_still_counts(db: Session, provider: Provider) -> None:
+    """The filter must not overreach. An outlet naming ANOTHER outlet as its subject
+    is real signal, not self-attribution, and must still license a join."""
+    axios = named_source(db, "pytest-mast3-axios.invalid")
+    other = named_source(db, "pytest-mast3-other.invalid")
+    npr_as_subject = exact_entity(db, "pytest-mast3-npr")
+
+    founder = embedded_article(db, provider, axios, 520, vector(70))
+    link(db, founder, npr_as_subject)
+    cluster_article(db, founder, join_threshold=0.999)
+
+    incoming = embedded_article(db, provider, other, 521, vector(70, 0.05))
+    link(db, incoming, npr_as_subject)
+    joined = cluster_article(db, incoming, join_threshold=0.5)
+
+    assert joined.joined, "excluded a genuine subject reference, not self-attribution"

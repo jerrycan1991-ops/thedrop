@@ -238,14 +238,17 @@ def shared_guard_entities(
 
     Non-empty is what satisfies the guard. The caller still applies the similarity
     threshold -- both conditions are required, and neither substitutes for the other.
+
+    The story side goes through `story_guard_entities` rather than a raw StoryEntity
+    query, so the LIVE join decision gets the same publisher filter consolidation and
+    the recall diagnostic do. Querying StoryEntity directly here is what let a
+    single-publisher story's own masthead count as a shared entity in the first place.
     """
     article = guard_entity_ids(db, raw_article_id, max_fraction=max_fraction, min_floor=min_floor)
     if not article:
         return set()
 
-    story = set(
-        db.execute(select(StoryEntity.entity_id).where(StoryEntity.story_id == story_id)).scalars()
-    )
+    story = story_guard_entities(db, story_id, max_fraction=max_fraction, min_floor=min_floor)
     return article & story
 
 
@@ -586,24 +589,52 @@ def story_guard_entities(
 ) -> set[int]:
     """A story's entities that are allowed to justify a merge.
 
-    The same two filters the article-side guard applies. Consolidation must not become
-    a way around the guard: if "United States" cannot license a join, it cannot license
+    The same filters the article-side guard applies. Consolidation must not become a
+    way around the guard: if "United States" cannot license a join, it cannot license
     a merge either, or every US story eventually collapses into one.
 
-    The publisher filter has no analogue here -- a story has no single publisher -- and
-    it is not needed: an entity that is merely one outlet's masthead will not be shared
-    with a story built from other outlets.
+    FOUND IN PRODUCTION: this originally had no publisher filter at all, on the theory
+    that "a story has no single publisher". True for a genuinely multi-outlet story,
+    false for a singleton -- which has exactly one -- and a singleton founded by, say,
+    an npr.org article had "NPR" itself sitting in its own guard set, unfiltered.
+    Nothing had yet exploited it, but the live join path (`shared_guard_entities`, via
+    the raw StoryEntity query it used before this fix) was exposed to the same gap:
+    a second outlet's article merely mentioning "NPR reported..." could have joined a
+    story on the strength of the first outlet naming itself.
+
+    The filter applies only while every CURRENT member shares one publisher, and lifts
+    the moment a second, different outlet joins: at that point the entity is no longer
+    self-attribution for every member, and excluding it would discard a genuine
+    signal -- one outlet naming another as its actual subject.
     """
     excluded = overexposed_entity_ids(db, max_fraction=max_fraction, min_floor=min_floor)
+
+    domains = set(
+        db.execute(
+            select(Source.domain)
+            .join(RawArticle, RawArticle.source_id == Source.id)
+            .join(StorySource, StorySource.raw_article_id == RawArticle.id)
+            .where(StorySource.story_id == story_id)
+        ).scalars()
+    )
+    # Only ever non-empty when the story is currently single-publisher -- see the
+    # docstring for why a multi-outlet story gets no publisher filtering at all.
+    publisher = _publisher_labels(next(iter(domains))) if len(domains) == 1 else set()
+
     rows = db.execute(
-        select(StoryEntity.entity_id)
+        select(StoryEntity.entity_id, Entity.canonical_name)
         .join(Entity, Entity.id == StoryEntity.entity_id)
         .where(
             StoryEntity.story_id == story_id,
             Entity.entity_type.not_in(GUARD_EXCLUDED_TYPES),
         )
-    ).scalars()
-    return set(rows) - excluded
+    ).all()
+
+    return {
+        entity_id
+        for entity_id, name in rows
+        if entity_id not in excluded and _normalise(name) not in publisher
+    }
 
 
 def merge_stories(db: Session, survivor_id: int, absorbed_id: int) -> None:

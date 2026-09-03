@@ -106,6 +106,8 @@ Entity overlap is required because embeddings alone happily merge "shooting in O
 
 The shared entity must **discriminate**: `OTHER`-typed entities never qualify, and neither does one appearing in more than `ENTITY_GUARD_MAX_DOC_FRACTION` of the corpus. Measured against the first 152 articles, "United States" appeared in 18% of them — a bare "≥ 1 shared entity" rule would have let any two US stories merge. See ADR-0017.
 
+A story's own masthead is excluded too, while every current member shares one publisher — otherwise a singleton founded by one outlet's article would have that outlet's own name sitting in its guard set, letting any other article merely mentioning it join on self-attribution rather than a shared subject. The filter lifts the moment a second, different outlet joins the story.
+
 Merges are recorded so a story's identity is auditable.
 
 ## 7. US relevance (0–100)
