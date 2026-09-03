@@ -319,12 +319,14 @@ def test_an_unknown_article_is_reported_not_an_error(db: Session) -> None:
 def test_re_extracting_a_story_member_removes_a_ghost_entity(
     db: Session, provider: Provider, source: Source
 ) -> None:
-    """The finding, reproduced. A story's promoted entity set was written once at join
-    time and never kept in sync afterwards -- a Nepal floods story kept "United States"
-    in its guard set after the one member that had carried it was re-extracted and no
-    longer did. `story_guard_entities` reads that same table for the LIVE join
-    decision, so a ghost entity could license a future wrong join on the strength of
-    something no current member actually says.
+    """The bug this reproduces by construction: a story's promoted entity set was
+    written once at join time and never kept in sync afterwards, so a member's
+    re-extraction could leave a ghost entity behind. First suspected from a US
+    relevance score anomaly on a Nepal-floods story -- that specific story turned out,
+    on direct verification against production, to have never actually gone stale (see
+    ADR-0019's "Correction" section), but the gap itself is real: `story_guard_entities`
+    reads this same table for the LIVE join decision, so a ghost entity could license a
+    future wrong join on the strength of something no current member actually says.
     """
     us = Entity(canonical_name="pytest United States", entity_type="PLACE")
     db.add(us)
