@@ -32,6 +32,7 @@ from thedrop_database.models.growth import AdPlacement, NewsletterSubscriber
 from thedrop_database.models.ingestion import Provider, RawArticle, Source
 from thedrop_database.models.ops import Job, WorkerNode
 from thedrop_database.models.story import (
+    ClusterLabel,
     Entity,
     RawArticleEntity,
     Story,
@@ -58,6 +59,7 @@ __all__ = [
     "ArticleVersion",
     "AuditLog",
     "Category",
+    "ClusterLabel",
     "Correction",
     "Entity",
     "Job",

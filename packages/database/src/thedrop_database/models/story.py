@@ -226,3 +226,40 @@ class RawArticleEntity(Base, PrimaryKeyMixin):
     #: model confidence -- a name mentioned once in passing should not gate a merge.
     salience: Mapped[float | None] = mapped_column(Numeric(4, 3))
     mention_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class ClusterLabel(Base, PrimaryKeyMixin):
+    """A human verdict on one clustering decision.
+
+    Ground truth for the Phase 3 exit criterion: precision >= 0.90 on a hand-labelled
+    set. One row per PLACEMENT -- an article joining a story -- because that is the
+    decision the guard actually makes. A founder is not a placement and is not labelled;
+    counting it would inflate precision with decisions nobody took.
+
+    Kept in the database rather than a file so it survives a redeploy, can be joined
+    against the stories it judges, and cannot be silently regenerated. Labels are
+    evidence; regenerating them would be inventing them.
+    """
+
+    __tablename__ = "cluster_labels"
+    __table_args__ = (
+        UniqueConstraint("story_id", "raw_article_id", name="uq_cluster_labels_placement"),
+        Index("ix_cluster_labels_article", "raw_article_id"),
+    )
+
+    # No index=True: uq_cluster_labels_placement leads with story_id.
+    story_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("stories.id", ondelete="CASCADE"), nullable=False
+    )
+    raw_article_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("raw_articles.id", ondelete="CASCADE"), nullable=False
+    )
+    #: correct | wrong | unsure. `unsure` is recorded rather than skipped: an article a
+    #: human could not judge is a fact about the data, and dropping it would quietly
+    #: bias the measurement towards the easy cases.
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    labelled_by: Mapped[str | None] = mapped_column(String(64))
+    labelled_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
