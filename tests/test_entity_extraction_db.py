@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from app.routers.worker import ArticleEntities, EntitiesRequest, ExtractedEntity, store_entities
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from thedrop_database import engine
 from thedrop_database.entity_queue import (
@@ -32,7 +32,17 @@ from thedrop_database.entity_queue import (
     pending_extraction_count,
 )
 from thedrop_database.enums import JobStatus
-from thedrop_database.models import Entity, Job, Provider, RawArticle, RawArticleEntity, Source
+from thedrop_database.models import (
+    Entity,
+    Job,
+    Provider,
+    RawArticle,
+    RawArticleEntity,
+    Source,
+    Story,
+    StoryEntity,
+    StorySource,
+)
 
 pytestmark = pytest.mark.db
 
@@ -301,3 +311,86 @@ def test_an_unknown_article_is_reported_not_an_error(db: Session) -> None:
 
     assert result["articles"] == 0
     assert result["unknown"] == ["00000000-0000-4000-8000-000000000000"]
+
+
+# --------------------------------------------------------------- story resync
+
+
+def test_re_extracting_a_story_member_removes_a_ghost_entity(
+    db: Session, provider: Provider, source: Source
+) -> None:
+    """The finding, reproduced. A story's promoted entity set was written once at join
+    time and never kept in sync afterwards -- a Nepal floods story kept "United States"
+    in its guard set after the one member that had carried it was re-extracted and no
+    longer did. `story_guard_entities` reads that same table for the LIVE join
+    decision, so a ghost entity could license a future wrong join on the strength of
+    something no current member actually says.
+    """
+    us = Entity(canonical_name="pytest United States", entity_type="PLACE")
+    db.add(us)
+    db.flush()
+
+    article = add_article(db, provider, source, n=500)
+    story = Story(title="pytest resync story")
+    db.add(story)
+    db.flush()
+    db.add(StorySource(story_id=story.id, raw_article_id=article.id, is_primary=True))
+    db.add(StoryEntity(story_id=story.id, entity_id=us.id, mention_count=1))
+    article.story_id = story.id  # what cluster_article actually sets on a join
+    db.flush()
+
+    # The article is re-extracted and, this time, does not mention "United States" at
+    # all -- exactly what fixing an alias/normalisation bug and re-running would do.
+    store_entities(
+        EntitiesRequest(
+            model="dslim/bert-base-NER",
+            items=[ArticleEntities(id=str(article.public_id), entities=[])],
+        ),
+        FakeNode(),
+        db,
+    )
+
+    guarded = set(
+        db.scalars(select(StoryEntity.entity_id).where(StoryEntity.story_id == story.id)).all()
+    )
+    assert us.id not in guarded, "the ghost entity survived a re-extraction that removed it"
+
+
+def test_re_extraction_adds_the_new_entity_to_the_story_too(
+    db: Session, provider: Provider, source: Source
+) -> None:
+    """The resync is a full recompute, not just a removal -- it must also pick up
+    whatever the re-extraction newly found."""
+    article = add_article(db, provider, source, n=501)
+    story = Story(title="pytest resync story 2")
+    db.add(story)
+    db.flush()
+    db.add(StorySource(story_id=story.id, raw_article_id=article.id, is_primary=True))
+    article.story_id = story.id
+    db.flush()
+
+    store_entities(
+        request_for(article, ("pytest-newly-found", "ORG")),
+        FakeNode(),
+        db,
+    )
+
+    names = db.scalars(
+        select(Entity.canonical_name)
+        .join(StoryEntity, StoryEntity.entity_id == Entity.id)
+        .where(StoryEntity.story_id == story.id)
+    ).all()
+    assert "pytest-newly-found" in names
+
+
+def test_re_extracting_an_unclustered_article_touches_no_story(
+    db: Session, provider: Provider, source: Source
+) -> None:
+    """The common case -- most re-extractions happen before an article has ever
+    joined a story. Nothing here should reach for a story that does not apply."""
+    article = add_article(db, provider, source, n=502)  # story_id is None
+
+    # Must not raise, and must not create or touch any StoryEntity row.
+    store_entities(request_for(article, ("pytest-solo", "ORG")), FakeNode(), db)
+
+    assert db.scalar(select(func.count(StoryEntity.id))) == 0

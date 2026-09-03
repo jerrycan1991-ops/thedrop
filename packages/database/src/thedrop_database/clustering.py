@@ -331,6 +331,46 @@ def _promote_entities(db: Session, article_id: int, story_id: int) -> None:
         )
 
 
+def resync_story_entities(db: Session, story_id: int) -> None:
+    """Recompute a story's entire StoryEntity set from its CURRENT members' CURRENT
+    entities. Unlike `_promote_entities`, this can remove rows, not just add them.
+
+    FOUND IN PRODUCTION: `_promote_entities` runs once, at the moment an article joins
+    a story. Nothing kept `StoryEntity` in sync afterwards -- so when an article that
+    had already joined a story was later re-extracted (a backfill after fixing entity
+    normalisation, or any future re-extraction of an already-clustered article),
+    `store_entities` replaced that article's `raw_article_entities` but the story's
+    promoted copy kept its stale snapshot. A Nepal-floods story ended up with "United
+    States" in its guard set though none of its eight current members carried that
+    entity any more -- a ghost with no article behind it.
+
+    That is not cosmetic. `story_guard_entities` reads this same table for the LIVE
+    join decision, so a ghost entity could license a future wrong join on the strength
+    of something no current member actually says.
+
+    Call this whenever a member article's entities change after the story already
+    exists -- currently: when `store_entities` re-extracts an article that already
+    belongs to a story. Deliberately a full DELETE-then-rebuild rather than a diff:
+    the failure mode being fixed is exactly "a stale row nobody noticed", so the fix
+    must not leave room for a different stale row to survive it.
+    """
+    rows = db.execute(
+        select(RawArticleEntity.entity_id, func.sum(RawArticleEntity.mention_count))
+        .join(StorySource, StorySource.raw_article_id == RawArticleEntity.raw_article_id)
+        .where(StorySource.story_id == story_id)
+        .group_by(RawArticleEntity.entity_id)
+    ).all()
+
+    db.execute(delete(StoryEntity).where(StoryEntity.story_id == story_id))
+    for entity_id, mentions in rows:
+        db.execute(
+            pg_insert(StoryEntity).values(
+                story_id=story_id, entity_id=entity_id, mention_count=int(mentions or 0)
+            )
+        )
+    db.flush()
+
+
 def _recount_sources(db: Session, story_id: int) -> None:
     """Refresh `source_count` from the membership.
 

@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from thedrop_database.clustering import resync_story_entities
 from thedrop_database.enums import EntityType, JobStatus, WorkerStatus
 from thedrop_database.models import Entity, Job, RawArticle, RawArticleEntity
 
@@ -330,6 +331,13 @@ def store_entities(payload: EntitiesRequest, node: WorkerDep, db: SessionDep) ->
     model change or a requeued job, and merging would leave the output of two different
     models mixed together in one article with no way to tell which came from where.
 
+    If the article already belongs to a story, that story's promoted entity set is
+    RESYNCED after the replacement. Found in production: without this, a story kept a
+    "United States" entity in its guard set for a Nepal floods story after the one
+    member article that had carried it was re-extracted and no longer did -- a ghost
+    entity with no current article behind it, sitting in the exact table
+    `story_guard_entities` reads for the live clustering join decision.
+
     `entities_extracted_at` is set from the presence of the article in this payload,
     not from whether any entities came back -- an article where the tagger found
     nothing is processed, and must not be queued again.
@@ -338,12 +346,21 @@ def store_entities(payload: EntitiesRequest, node: WorkerDep, db: SessionDep) ->
     now = datetime.now(UTC)
     stored = 0
     unknown: list[str] = []
+    # Articles that already belong to a story have that story's promoted entity set
+    # go stale the moment their own raw_article_entities are replaced below --
+    # resync_story_entities is what closes that, but it is a full recompute, so it
+    # runs at most once per affected story for this whole batch, not once per article.
+    stories_to_resync: set[int] = set()
 
     for item in payload.items:
-        article_id = db.scalar(select(RawArticle.id).where(RawArticle.public_id == item.id))
+        article_id, story_id = db.execute(
+            select(RawArticle.id, RawArticle.story_id).where(RawArticle.public_id == item.id)
+        ).one_or_none() or (None, None)
         if article_id is None:
             unknown.append(item.id)
             continue
+        if story_id is not None:
+            stories_to_resync.add(story_id)
 
         db.execute(delete(RawArticleEntity).where(RawArticleEntity.raw_article_id == article_id))
 
@@ -377,6 +394,9 @@ def store_entities(payload: EntitiesRequest, node: WorkerDep, db: SessionDep) ->
         db.execute(
             update(RawArticle).where(RawArticle.id == article_id).values(entities_extracted_at=now)
         )
+
+    for story_id in stories_to_resync:
+        resync_story_entities(db, story_id)
 
     db.commit()
 
