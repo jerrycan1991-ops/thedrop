@@ -53,6 +53,20 @@ limit 10
 
 _STORIES = "select status, count(*) as n from stories group by status order by status"
 
+#: `merged_into_id is null` matches `unscored_story_ids` in scoring.py -- an
+#: absorbed story has nothing left to score, so it must not count as backlog here.
+_SCORING = """
+select
+  count(*)                                                as stories,
+  count(*) filter (where us_relevance_score is not null)  as scored,
+  round(avg(us_relevance_score)
+        filter (where us_relevance_score is not null))::int as avg_score,
+  min(us_relevance_score) as min_score,
+  max(us_relevance_score) as max_score
+from stories
+where merged_into_id is null
+"""
+
 #: The honest measure of clustering. Every story holding one article means the guard is
 #: refusing everything; a handful of stories holding all of them means it is refusing
 #: nothing. Both are failures, and the counts distinguish them at a glance.
@@ -175,6 +189,16 @@ def main() -> int:
         # Merges are invisible otherwise: the story count simply goes down, which reads
         # as stories never having existed rather than as consolidation working.
         print(f"  merged away        {merged}")
+
+        scoring = conn.execute(text(_SCORING)).one()
+        print("")
+        print("us relevance scoring")
+        print(f"  scored             {scoring.scored} / {scoring.stories}")
+        if scoring.scored:
+            print(
+                f"  score range        {scoring.min_score}-{scoring.max_score} "
+                f"(avg {scoring.avg_score})"
+            )
         print("\ntop entities")
         rows = conn.execute(text(_TOP_ENTITIES)).all()
         if not rows:

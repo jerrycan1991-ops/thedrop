@@ -131,3 +131,7 @@ def test_the_operator_commands_import() -> None:
     assert "raw_articles" in status._STAGES
     assert "story_sources" in status._CLUSTERS
     assert "merged_into_id" not in status._STAGES
+    assert "us_relevance_score" in status._SCORING
+    # Merged-away stories have nothing left to score, so the backlog count must not
+    # include them -- matching the same filter unscored_story_ids uses in scoring.py.
+    assert "merged_into_id" in status._SCORING
