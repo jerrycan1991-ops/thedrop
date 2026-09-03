@@ -206,12 +206,20 @@ if __name__ == "__main__":
         print("")
 
     try:
-        sys.exit(show_clusters() if args.clusters else main())
+        code = show_clusters() if args.clusters else main()
+        # `print()` to a pipe is buffered, not written immediately -- most calls just
+        # fill a userspace buffer. Without this, a `| head` closing early was often
+        # not caught here at all: the actual EPIPE only happened later, when the
+        # interpreter flushed that buffer during shutdown, which is AFTER this try
+        # block has already exited via sys.exit()'s SystemExit and can no longer catch
+        # anything. Flushing explicitly, inside the try, forces the write -- and the
+        # broken pipe it raises -- to happen where it is actually catchable.
+        sys.stdout.flush()
+        sys.exit(code)
     except OperationalError as exc:
         sys.exit(_explain_connection_failure(exc))
     except BrokenPipeError:
-        # `| head` closes the pipe early. Python then reports it again while flushing at
-        # exit, so stdout is redirected to devnull first -- otherwise a perfectly normal
-        # `| head -40` ends in a traceback that looks like a defect.
+        # A perfectly normal `| head -40`. Redirect to devnull before exiting so
+        # Python's own shutdown flush has nothing left to fail on.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         sys.exit(0)

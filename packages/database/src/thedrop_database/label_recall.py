@@ -436,10 +436,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.reset:
-            return reset()
-        if args.missed:
-            return show_missed()
-        return report() if args.report else label(args.limit)
+            code = reset()
+        elif args.missed:
+            code = show_missed()
+        else:
+            code = report() if args.report else label(args.limit)
+        # print() to a pipe is buffered, not written immediately -- most calls just
+        # fill a userspace buffer, so `| head` closing early often is not caught by
+        # this try at all: the actual EPIPE happens later, when the interpreter
+        # flushes that buffer during shutdown, after this function has already
+        # returned. Flushing explicitly, still inside the try, forces the write --
+        # and the broken pipe it raises -- to happen somewhere still catchable.
+        sys.stdout.flush()
+        return code
     except OperationalError:
         url = engine().url
         print(f"cannot connect to {url.host}:{url.port}/{url.database}", file=sys.stderr)
@@ -448,6 +457,8 @@ def main(argv: list[str] | None = None) -> int:
             print("  set -a; . ~/.config/thedrop/thedrop.env; set +a", file=sys.stderr)
         return 2
     except BrokenPipeError:
+        # A perfectly normal `| head`. Redirect to devnull before returning so
+        # Python's own shutdown flush has nothing left to fail on.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
 
