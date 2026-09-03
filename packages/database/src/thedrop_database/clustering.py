@@ -23,6 +23,11 @@ So a shared entity licenses a join only when it is DISCRIMINATIVE. Two filters:
   * **document frequency** -- an entity appearing in more than a small share of the
     corpus is excluded. Standard IDF reasoning: a term in 18% of documents separates
     almost nothing.
+  * **the article's own publisher** -- "NPR" in an NPR article is attribution, not
+    evidence about the event. Every outlet that names itself in its own copy produces
+    one of these, and two unrelated NPR stories sharing "NPR" would otherwise pass the
+    guard. Excluded only for the article that publisher wrote: "NPR" in a Reuters piece
+    ABOUT NPR is a genuine subject and still counts.
 
 This makes the guard STRICTER than PIPELINE.md specifies, not looser. It can only cause
 under-clustering, which is the safe direction (ADR-0015): duplicate stories are visible
@@ -38,7 +43,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from thedrop_database.enums import EntityType
-from thedrop_database.models import Entity, RawArticle, RawArticleEntity, StoryEntity
+from thedrop_database.models import Entity, RawArticle, RawArticleEntity, Source, StoryEntity
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,34 @@ def overexposed_entity_ids(
     return set(rows)
 
 
+#: Domain labels that are never a publisher's identity. Without this, "com" or "org"
+#: would be compared against entity names, which no entity is called but which costs
+#: nothing to exclude.
+_DOMAIN_NOISE = frozenset({"com", "org", "net", "gov", "edu", "co", "uk", "us", "io", "news"})
+
+
+def _normalise(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _publisher_labels(domain: str) -> set[str]:
+    """The words a publisher is likely to call itself, from its hostname.
+
+    `npr.org` -> {"npr"}; `science.nasa.gov` -> {"science", "nasa"}. The source's `name`
+    is set to its hostname at auto-creation, so the hostname is all there is to go on
+    until a human classifies it.
+    """
+    labels = {
+        label
+        for label in domain.lower().removeprefix("www.").split(".")
+        if label and label not in _DOMAIN_NOISE
+    }
+    # Normalised the same way entity names are, or "ap-news" would never match
+    # "AP News". Comparing a raw hostname label against a cleaned entity name silently
+    # matches nothing, which looks exactly like the filter being unnecessary.
+    return {_normalise(label) for label in labels if _normalise(label)}
+
+
 def guard_entity_ids(
     db: Session,
     raw_article_id: int,
@@ -96,20 +129,33 @@ def guard_entity_ids(
 ) -> set[int]:
     """The entities of one article that are allowed to license a join.
 
-    An article whose entities are all common or all OTHER returns an empty set, and
-    therefore cannot join anything. That is the correct outcome: nothing about it
-    distinguishes which event it belongs to.
+    An article whose entities are all common, all OTHER, or all its own masthead
+    returns an empty set, and therefore cannot join anything. That is the correct
+    outcome: nothing about it distinguishes which event it belongs to.
     """
     excluded = overexposed_entity_ids(db, max_fraction=max_fraction, min_floor=min_floor)
+
+    domain = db.scalar(
+        select(Source.domain)
+        .join(RawArticle, RawArticle.source_id == Source.id)
+        .where(RawArticle.id == raw_article_id)
+    )
+    publisher = _publisher_labels(domain or "")
+
     rows = db.execute(
-        select(RawArticleEntity.entity_id)
+        select(RawArticleEntity.entity_id, Entity.canonical_name)
         .join(Entity, Entity.id == RawArticleEntity.entity_id)
         .where(
             RawArticleEntity.raw_article_id == raw_article_id,
             Entity.entity_type.not_in(GUARD_EXCLUDED_TYPES),
         )
-    ).scalars()
-    return set(rows) - excluded
+    ).all()
+
+    return {
+        entity_id
+        for entity_id, name in rows
+        if entity_id not in excluded and _normalise(name) not in publisher
+    }
 
 
 def shared_guard_entities(

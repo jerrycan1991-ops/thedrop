@@ -193,9 +193,7 @@ def test_a_story_and_an_article_sharing_a_rare_entity_pass_the_guard(
     db.add(StoryEntity(story_id=story.id, entity_id=rare.id, mention_count=1))
     db.flush()
 
-    assert shared_guard_entities(db, art.id, story.id, max_fraction=0.10, min_floor=5) == {
-        rare.id
-    }
+    assert shared_guard_entities(db, art.id, story.id, max_fraction=0.10, min_floor=5) == {rare.id}
 
 
 def test_sharing_only_a_common_entity_fails_the_guard(
@@ -231,3 +229,85 @@ def test_an_article_with_no_discriminative_entities_joins_nothing(
 
     assert guard_entity_ids(db, art.id) == set()
     assert shared_guard_entities(db, art.id, story.id) == set()
+
+
+# ------------------------------------------------------------------ publisher
+
+
+def named_source(db: Session, domain: str) -> Source:
+    row = Source(domain=domain, name=domain)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def exact_entity(db: Session, name: str, kind: str = "ORG") -> Entity:
+    row = Entity(canonical_name=name, entity_type=kind)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def article_from(db: Session, provider: Provider, src: Source, n: int) -> RawArticle:
+    url = f"https://{src.domain}/{n}"
+    row = RawArticle(
+        provider_id=provider.id,
+        source_id=src.id,
+        canonical_url=url,
+        original_url=url,
+        url_hash=(800_000 + n).to_bytes(32, "big"),
+        title=f"Fixture {n}",
+        published_at=FIXTURE_EPOCH + timedelta(hours=n),
+        discovered_at=FIXTURE_EPOCH + timedelta(hours=n),
+        injection_flags={"patterns": []},
+        entities_extracted_at=datetime.now(UTC),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_an_article_cannot_be_clustered_by_its_own_masthead(
+    db: Session, provider: Provider
+) -> None:
+    """ "NPR" in an NPR article is attribution, not evidence about the event.
+
+    Found in real data: NPR appeared in 8 of 152 articles, below the discriminative
+    ceiling, so two unrelated NPR stories could have passed the guard on the strength of
+    sharing their publisher. Every outlet that names itself in its own copy does this.
+    """
+    npr = named_source(db, "pytest-npr.invalid")
+    masthead = exact_entity(db, "pytest-npr")
+    art = article_from(db, provider, npr, 1)
+    link(db, art, masthead)
+
+    assert masthead.id not in guard_entity_ids(db, art.id, max_fraction=0.10, min_floor=5)
+
+
+def test_the_same_name_still_counts_in_someone_else_s_article(
+    db: Session, provider: Provider
+) -> None:
+    """The filter is about attribution, not about the word. A piece in another outlet
+    ABOUT NPR has NPR as a genuine subject, and must keep it."""
+    npr = named_source(db, "pytest-npr2.invalid")
+    other = named_source(db, "pytest-elsewhere.invalid")
+    subject = exact_entity(db, "pytest-npr2")
+
+    own = article_from(db, provider, npr, 10)
+    theirs = article_from(db, provider, other, 11)
+    link(db, own, subject)
+    link(db, theirs, subject)
+
+    assert subject.id not in guard_entity_ids(db, own.id, max_fraction=0.10, min_floor=5)
+    assert subject.id in guard_entity_ids(db, theirs.id, max_fraction=0.10, min_floor=5)
+
+
+def test_a_subdomain_publisher_is_matched_on_every_label(db: Session, provider: Provider) -> None:
+    """`science.nasa.gov` is NASA. Matching only the first label would let a NASA press
+    release cluster with an unrelated NASA press release on the word NASA."""
+    src = named_source(db, "pytest-sci.pytest-nasa.invalid")
+    masthead = exact_entity(db, "pytest-nasa")
+    art = article_from(db, provider, src, 20)
+    link(db, art, masthead)
+
+    assert masthead.id not in guard_entity_ids(db, art.id, max_fraction=0.10, min_floor=5)
