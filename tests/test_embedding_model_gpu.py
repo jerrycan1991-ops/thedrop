@@ -30,6 +30,7 @@ import pytest
 from app.routers.worker import EmbeddingItem, EmbeddingsRequest, store_embeddings
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from thedrop_config import get_settings
 from thedrop_database import engine
 from thedrop_database.models import Provider, RawArticle, Source
 
@@ -46,8 +47,8 @@ pytestmark = [
     ),
 ]
 
-DIMENSIONS = 384
-MODEL = "BAAI/bge-small-en-v1.5"
+DIMENSIONS = get_settings().ai.embedding_dimensions
+MODEL = get_settings().ai.embedding_model  # the real config, not a stand-in
 TEST_DOMAIN = "pytest-gpu-fixture.invalid"
 FIXTURE_EPOCH = datetime(2020, 1, 1, tzinfo=UTC)
 
@@ -150,11 +151,6 @@ class FakeNode:
     name = "desktop-gpu-test"
 
 
-class FakeSettings:
-    embedding_model = MODEL
-    embedding_dimensions = DIMENSIONS
-
-
 @pytest.mark.db
 def test_real_vectors_pass_validation_and_land_in_the_row(db: Session) -> None:
     """End to end on the parts that were only ever stubbed: a real model's output
@@ -210,7 +206,7 @@ def test_real_vectors_pass_validation_and_land_in_the_row(db: Session) -> None:
         ),
         FakeNode(),
         db,
-        FakeSettings(),
+        get_settings(),
     )
 
     assert result == {"stored": 1, "unknown": []}

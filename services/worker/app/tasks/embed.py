@@ -39,8 +39,8 @@ def dispatch_embedding_batches() -> dict[str, object]:
         pending = pending_embedding_count(db)
         queued = enqueue_embedding_batches(
             db,
-            batch_size=settings.embedding_batch_size,
-            max_batches=settings.embedding_max_batches_per_tick,
+            batch_size=settings.ai.embedding_batch_size,
+            max_batches=settings.ai.embedding_max_batches_per_tick,
         )
 
     if queued:

@@ -248,14 +248,14 @@ def store_embeddings(
     completing. What this adds is that a *wrong* vector is refused even from a
     legitimate worker.
     """
-    if payload.model != settings.embedding_model:
+    if payload.model != settings.ai.embedding_model:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"embedding model mismatch: this deployment stores "
-            f"{settings.embedding_model!r}, worker sent {payload.model!r}",
+            f"{settings.ai.embedding_model!r}, worker sent {payload.model!r}",
         )
 
-    expected_dimensions = settings.embedding_dimensions
+    expected_dimensions = settings.ai.embedding_dimensions
     for item in payload.items:
         if len(item.vector) != expected_dimensions:
             raise HTTPException(

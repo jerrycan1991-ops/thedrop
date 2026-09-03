@@ -22,6 +22,7 @@ from app.routers.worker import EmbeddingItem, EmbeddingsRequest, store_embedding
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from thedrop_config import get_settings
 from thedrop_database import engine
 from thedrop_database.embedding_queue import (
     JOB_TYPE,
@@ -226,19 +227,18 @@ def test_re_dispatching_an_unchanged_backlog_queues_nothing_new(
 # validation and the write, not FastAPI's routing. `db.commit()` inside it is contained
 # by the fixture's outer transaction, so nothing reaches the live database.
 
-MODEL = "BAAI/bge-small-en-v1.5"
+# The REAL Settings object, not a stand-in. A hand-written fake with
+# `embedding_model` directly on it is what let `settings.embedding_model` ship: the
+# field actually lives on the nested `settings.ai`, so every one of these passed while
+# the endpoint raised AttributeError in production. A fake that is easier to satisfy
+# than the real thing tests the fake.
+MODEL = get_settings().ai.embedding_model
 
 
 @dataclass
 class FakeNode:
     id: int = 1
     name: str = "desktop-test"
-
-
-@dataclass
-class FakeSettings:
-    embedding_model: str = MODEL
-    embedding_dimensions: int = 384
 
 
 def unit(seed: int = 1) -> list[float]:
@@ -255,7 +255,7 @@ def test_a_batch_from_the_wrong_model_is_refused(db: Session) -> None:
     )
 
     with pytest.raises(HTTPException) as caught:
-        store_embeddings(request, FakeNode(), db, FakeSettings())
+        store_embeddings(request, FakeNode(), db, get_settings())
 
     assert caught.value.status_code == 400
     assert "model mismatch" in caught.value.detail
@@ -265,7 +265,7 @@ def test_the_wrong_number_of_dimensions_is_refused(db: Session) -> None:
     request = EmbeddingsRequest(model=MODEL, items=[EmbeddingItem(id="a", vector=[0.1] * 768)])
 
     with pytest.raises(HTTPException) as caught:
-        store_embeddings(request, FakeNode(), db, FakeSettings())
+        store_embeddings(request, FakeNode(), db, get_settings())
 
     assert caught.value.status_code == 400
     assert "768" in caught.value.detail
@@ -277,7 +277,7 @@ def test_an_unnormalized_vector_is_refused(db: Session) -> None:
     request = EmbeddingsRequest(model=MODEL, items=[EmbeddingItem(id="a", vector=[0.5] * 384)])
 
     with pytest.raises(HTTPException) as caught:
-        store_embeddings(request, FakeNode(), db, FakeSettings())
+        store_embeddings(request, FakeNode(), db, get_settings())
 
     assert caught.value.status_code == 400
     assert "not normalized" in caught.value.detail
@@ -298,7 +298,7 @@ def test_nothing_is_written_when_any_item_in_the_batch_is_invalid(
     )
 
     with pytest.raises(HTTPException):
-        store_embeddings(request, FakeNode(), db, FakeSettings())
+        store_embeddings(request, FakeNode(), db, get_settings())
 
     db.refresh(article)
     assert article.embedding is None
@@ -315,7 +315,7 @@ def test_a_valid_batch_is_stored_and_timestamped(
         ),
         FakeNode(),
         db,
-        FakeSettings(),
+        get_settings(),
     )
 
     assert result == {"stored": 1, "unknown": []}
@@ -334,7 +334,29 @@ def test_an_unknown_article_is_reported_not_an_error(db: Session) -> None:
         EmbeddingsRequest(model=MODEL, items=[EmbeddingItem(id=unknown_id, vector=unit())]),
         FakeNode(),
         db,
-        FakeSettings(),
+        get_settings(),
     )
 
     assert result == {"stored": 0, "unknown": [unknown_id]}
+
+
+def test_the_settings_the_dispatcher_reads_actually_exist() -> None:
+    """Stands in for `app.tasks.embed.dispatch_embedding_batches`, which cannot be
+    imported here: services/api and services/worker both ship a top-level `app`, and
+    conftest puts services/api on sys.path first.
+
+    It exists because the task shipped reading `settings.embedding_batch_size` when the
+    field lives on the nested `settings.ai`. Nothing caught it — no test called the
+    task, and the endpoint tests injected a fake Settings that had the fields directly
+    on it. It crash-looped every 120 seconds in production while the deploy reported
+    six green gates.
+
+    The expressions below are exactly the ones the dispatcher and the endpoint use.
+    """
+    ai = get_settings().ai
+
+    assert isinstance(ai.embedding_batch_size, int)
+    assert isinstance(ai.embedding_max_batches_per_tick, int)
+    assert isinstance(ai.embedding_dimensions, int)
+    assert isinstance(ai.embedding_model, str)
+    assert ai.embedding_model

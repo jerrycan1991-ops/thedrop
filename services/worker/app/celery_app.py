@@ -47,6 +47,12 @@ celery_app.conf.update(
     task_routes={
         "app.tasks.ingest.*": {"queue": "ingest"},
         "app.tasks.maintain.*": {"queue": "maintain"},
+        # Embedding DISPATCH is a cheap query that inserts job rows; the expensive part
+        # happens on the desktop. It belongs with maintenance, and is routed explicitly
+        # rather than left to `task_default_queue` -- it already lands there by default,
+        # so changing that default would silently strand it on a queue nobody consumes,
+        # with beat publishing every 120s and nothing ever running.
+        "app.tasks.embed.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
 )
