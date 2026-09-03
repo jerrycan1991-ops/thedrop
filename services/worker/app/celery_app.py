@@ -29,6 +29,7 @@ celery_app = Celery(
         "app.tasks.embed",
         "app.tasks.extract",
         "app.tasks.cluster",
+        "app.tasks.score",
         "app.tasks.publish",
     ],
 )
@@ -62,6 +63,7 @@ celery_app.conf.update(
         "app.tasks.embed.*": {"queue": "maintain"},
         "app.tasks.extract.*": {"queue": "maintain"},
         "app.tasks.cluster.*": {"queue": "maintain"},
+        "app.tasks.score.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
 )
@@ -109,6 +111,12 @@ celery_app.conf.beat_schedule = {
     "consolidate-recent-stories": {
         "task": "app.tasks.cluster.consolidate_recent_stories",
         "schedule": 600.0,
+    },
+    # Scoring is pure SQL, so it can run often. It only acts on stories with no score
+    # yet, so a fast tick just means a newly clustered story gets scored sooner.
+    "score-us-relevance": {
+        "task": "app.tasks.score.score_us_relevance_batch",
+        "schedule": 60.0,
     },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",

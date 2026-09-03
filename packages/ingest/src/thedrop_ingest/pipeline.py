@@ -101,6 +101,17 @@ def build_adapter(provider: Provider) -> RSSProvider:
 #: and is set by classification, never guessed here.
 _AUTHORITY_SUFFIXES = (".gov", ".mil", ".gov.uk", ".europa.eu")
 
+#: `Source.country` defaults to "US" -- a reasonable prior for a US-focused
+#: aggregator's feed list, but a default is not a fact, and `theguardian.com` sat
+#: silently misclassified as US for as long as this override did not exist. Domains
+#: known to be headquartered elsewhere are named here explicitly; this is public,
+#: verifiable information about real organisations, not a guess -- the same standing
+#: as `_AUTHORITY_SUFFIXES` above. New non-US feeds need an entry added here, or they
+#: inherit the "US" default silently, the same way this one did.
+_NON_US_DOMAINS: dict[str, str] = {
+    "theguardian.com": "GB",
+}
+
 
 def resolve_source(db: Session, url: str) -> Source:
     """Find or create the `sources` row for a URL's domain.
@@ -129,6 +140,7 @@ def resolve_source(db: Session, url: str) -> Source:
         domain=host,
         name=host,
         homepage_url=f"https://{host}/",
+        country=_NON_US_DOMAINS.get(host, "US"),
         source_type=SourceType.GOVERNMENT if is_authority else SourceType.UNKNOWN,
         is_primary_authority=is_authority,
         allow_auto_publish=False,

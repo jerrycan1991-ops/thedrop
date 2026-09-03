@@ -124,6 +124,8 @@ Weighted, transparent, tunable in config:
 
 Below `US_RELEVANCE_MIN` (default 35) a story is not written unless it is World-category and importance ≥ 80.
 
+Implemented so far: US entities and US publisher share only (2 of 5 signals, 50% of the formula's weight), rescaled to fill 0-100 and recorded as such in `stories.us_relevance_basis`. Runs on the VPS, not the desktop — it is pure SQL, and needs no model. See ADR-0018 for why, and for what is still missing.
+
 ## 8. Virality (0–100)
 
 Signals are captured as a **time series** (`viral_signals`) so velocity is measured, not guessed.

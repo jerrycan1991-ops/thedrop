@@ -87,6 +87,14 @@ class Story(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     )
 
     us_relevance_score: Mapped[int | None] = mapped_column(SmallInteger)
+    #: Which signals contributed, their raw and weighted values, and what fraction of
+    #: the formula's total weight was covered. PIPELINE.md 7 specifies five weighted
+    #: signals; only two are implemented as of this column existing (entities,
+    #: publisher share -- 50% of the formula's weight). Rescaling those two to fill the
+    #: 0-100 scale makes the STORED score usable now, but this basis is what keeps that
+    #: honest: `coverage` says how much of the real formula it actually represents, the
+    #: same role `sources.reliability_basis` plays for reliability_score.
+    us_relevance_basis: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     viral_score: Mapped[int | None] = mapped_column(SmallInteger)
     opportunity_score: Mapped[int | None] = mapped_column(SmallInteger)
     importance_score: Mapped[int | None] = mapped_column(SmallInteger)
