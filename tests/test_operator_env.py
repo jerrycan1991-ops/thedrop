@@ -65,8 +65,27 @@ def test_a_missing_file_is_not_an_error(tmp_path: Path, monkeypatch: pytest.Monk
         ("KEY=  padded  ", "padded"),
         ('KEY=ends-with-a-quote"', 'ends-with-a-quote"'),
         ("KEY=has=equals=inside", "has=equals=inside"),
+        # The one that broke a command on the VPS. The env file carries lines like
+        # `PUBLISHING_ENABLED=false   # publishes nothing automatically`, and taking the
+        # whole remainder gave pydantic a sentence where it wanted a boolean.
+        ("KEY=false      # a trailing comment", "false"),
+        # A '#' only starts a comment when whitespace precedes it, so a URL or a
+        # password containing one survives. Truncating a credential here would produce
+        # an authentication failure with no visible cause.
+        ("KEY=postgresql://u:p#w@h/db", "postgresql://u:p#w@h/db"),
+        ('KEY="a # b"', "a # b"),
     ],
-    ids=["double", "single", "bare", "padded", "trailing quote", "equals in value"],
+    ids=[
+        "double",
+        "single",
+        "bare",
+        "padded",
+        "trailing quote",
+        "equals in value",
+        "inline comment",
+        "hash inside a value",
+        "hash inside quotes",
+    ],
 )
 def test_values_parse_the_way_source_would(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str, expected: str

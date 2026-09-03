@@ -27,15 +27,34 @@ from pathlib import Path
 DEFAULT_ENV_FILE = Path.home() / ".config" / "thedrop" / "thedrop.env"
 
 
-def _unquote(value: str) -> str:
-    """Strip one matching pair of quotes, the way `source` would.
+def _parse_value(raw: str) -> str:
+    """Read a value the way `source` would: quotes honoured, inline comments dropped.
 
-    Only a matching pair: a value that legitimately ends in a quote character keeps it,
-    and `strip('"')` would have eaten it.
+    The env file contains lines like
+
+        PUBLISHING_ENABLED=false                    # publishes nothing automatically
+
+    and `source` keeps only `false`. Taking the whole remainder produced
+    "false ... publishes nothing automatically", which pydantic rejected -- breaking a
+    command in a fresh SSH session, where this loader runs for the first time.
+
+    A `#` only starts a comment when preceded by whitespace, so `abc#def` stays whole.
+    Inside quotes it is literal, because a password may legitimately contain one and
+    silently truncating a credential produces an authentication failure with no visible
+    cause.
     """
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
+    value = raw.strip()
+    if value[:1] in {'"', "'"}:
+        quote = value[0]
+        closing = value.find(quote, 1)
+        if closing != -1:
+            return value[1:closing]
+        return value[1:]
+
+    # Unquoted: cut at the first whitespace-preceded '#'.
+    for index in range(1, len(value)):
+        if value[index] == "#" and value[index - 1].isspace():
+            return value[:index].strip()
     return value
 
 
@@ -60,5 +79,5 @@ def load_operator_env(path: Path | None = None) -> Path | None:
         key, _, value = line.partition("=")
         key = key.strip()
         if key:
-            os.environ.setdefault(key, _unquote(value))
+            os.environ.setdefault(key, _parse_value(value))
     return env_file
