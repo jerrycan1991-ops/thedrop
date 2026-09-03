@@ -381,9 +381,44 @@ def label(limit: int) -> int:
     return report()
 
 
+def reset() -> int:
+    """Delete every pair judgement, after a confirmation typed in full.
+
+    Same guard as the placement tool's reset, for the same reason: labels are evidence,
+    and a set that turned out to be wrong is worse than no set, because it is the number
+    that gets quoted later. Deleting it must still be a deliberate act.
+    """
+    with session_scope() as db:
+        existing = db.scalar(select(func.count(StoryPairLabel.id))) or 0
+
+    if not existing:
+        print("no pair labels to clear")
+        return 0
+
+    print(f"This deletes {existing} pair judgements permanently.")
+    try:
+        answer = input("Type 'delete labels' to confirm: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    if answer.strip().lower() != "delete labels":
+        print("not confirmed; nothing was deleted")
+        return 1
+
+    with session_scope() as db:
+        db.query(StoryPairLabel).delete()
+    print(f"deleted {existing} pair judgements")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", action="store_true", help="print the numbers and exit")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="delete every pair judgement, after typing a confirmation in full",
+    )
     parser.add_argument(
         "--missed",
         action="store_true",
@@ -400,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
         print("")
 
     try:
+        if args.reset:
+            return reset()
         if args.missed:
             return show_missed()
         return report() if args.report else label(args.limit)
