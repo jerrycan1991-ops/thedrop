@@ -38,7 +38,7 @@ from agent.client import (  # noqa: E402
     WorkerClient,
 )
 from agent.config import ConfigError, RunnerConfig, load_config  # noqa: E402
-from agent.handlers import NonRetryableError, dispatch, registered_types  # noqa: E402
+from agent.handlers import _REGISTRY, NonRetryableError, dispatch, registered_types  # noqa: E402
 from agent.runner import Runner  # noqa: E402
 
 TOKEN = "test-worker-token"
@@ -183,8 +183,24 @@ def test_config_fails_loudly_on_missing_token(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_only_registered_handlers_are_advertised() -> None:
-    """The claim call sends this list; advertising more would lease us undoable work."""
-    assert registered_types() == ("noop",)
+    """The claim call sends this list; advertising more would lease us undoable work.
+
+    Asserts the PROPERTY, not a snapshot of the registry. It previously pinned
+    `("noop",)`, which broke the moment `embed_articles` registered itself -- reporting
+    a new capability as a regression. What matters is that the advertised list is
+    exactly what `dispatch` can service, and that `embed_articles` appears only when
+    the model stack is present (ADR-0005).
+    """
+    from agent import embedding
+
+    advertised = registered_types()
+
+    assert "noop" in advertised
+    assert advertised == tuple(sorted(set(advertised))), "advertised list must be sorted, no dupes"
+    for job_type in advertised:
+        # Would raise NonRetryableError for anything advertised but undispatchable.
+        assert callable(_REGISTRY[job_type])
+    assert ("embed_articles" in advertised) == embedding.is_available()
 
 
 def test_dispatching_an_unregistered_type_is_not_retryable() -> None:

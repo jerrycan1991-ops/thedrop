@@ -28,6 +28,11 @@ dependencies = [
 [project.optional-dependencies]
 embeddings = [
     "sentence-transformers>=3.0",
+    # torch is listed explicitly even though sentence-transformers pulls it in. A
+    # `tool.uv.sources` override only applies to a dependency the workspace itself
+    # DECLARES -- as a purely transitive dependency, torch resolved from PyPI and
+    # installed the CPU build, on a machine bought for its GPU, reporting success.
+    "torch>=2.4",
 ]
 
 [tool.uv.sources]

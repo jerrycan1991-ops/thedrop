@@ -170,6 +170,19 @@ Three things worth knowing:
   batch is re-embedded to identical values. The reverse order could mark a job done
   whose vectors were never stored, and nothing would revisit those articles.
 
+Measured on an RTX 4070 SUPER (torch 2.14.0+cu126, model warm, load excluded):
+
+| Batch | Latency | Throughput |
+|---|---|---|
+| 1 | 13.8 ms | 72 articles/s |
+| 8 | 16.7 ms | 478 articles/s |
+| 32 | 16.4 ms | 1948 articles/s |
+
+Peak VRAM 151 MB. A batch of 32 costs barely more than a batch of 1, so the GPU is not
+the constraint — the job round trip is. Phase 2 targets ≥ 500 articles a day, which is
+under a second of GPU time; `EMBEDDING_BATCH_SIZE` is therefore sized by what fits
+comfortably in a job payload, not by what the card can take.
+
 A batch the server refuses — wrong model, wrong dimensions, a vector off the unit
 sphere — fails permanently rather than retrying. Recomputing produces the same rejected
 vectors, and ADR-0005's single vector space is exactly the invariant that must not

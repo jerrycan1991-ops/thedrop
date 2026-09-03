@@ -31,6 +31,18 @@ thedrop-ingest = { workspace = true }
 thedrop-api = { workspace = true }
 thedrop-worker = { workspace = true }
 thedrop-agent-runner = { workspace = true }
+# torch from NVIDIA's index below, not PyPI: the PyPI Windows wheel is CPU-only, so a
+# plain install silently yields a runner that works and never touches the 4070 -- the
+# kind of degradation that surfaces as "embeddings are slow" months later, if at all.
+torch = { index = "pytorch-cu126" }
+
+# `explicit = true` means ONLY packages that name this index use it; everything else
+# resolves from PyPI as usual. The VPS is unaffected -- torch is reachable only through
+# the `desktop-ml` group, which `uv sync --frozen` does not install (verified).
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [dependency-groups]
 # Desktop-only. The runner is a workspace MEMBER but nothing depends on it, and
@@ -87,6 +99,7 @@ markers = [
     "api: requires the FastAPI service running on 127.0.0.1:8000",
     "web: requires the Next.js service running on 127.0.0.1:3100",
     "integration: requires multiple live services",
+    "gpu: runs the real embedding model (skipped without `uv sync --group desktop-ml`)",
 ]
 filterwarnings = ["error::DeprecationWarning:thedrop.*"]
 
