@@ -94,18 +94,45 @@ def _load():
         return _pipeline
 
 
-def _clean(surface: str) -> str:
-    """Trim the punctuation and articles the tagger sometimes swallows.
+#: Tokenizer artifacts and abbreviations that are the SAME entity under another
+#: spelling. Deliberately tiny and only for forms that are unambiguous.
+#:
+#: "U. S" is not a judgement call -- it is damage. The tokenizer splits "U.S." into
+#: pieces and the aggregator rejoins them with a space, so the single most common
+#: entity in a US news corpus was being stored under a spelling no human wrote, split
+#: from "United States", which is the same country.
+#:
+#: This is NOT general entity resolution. Mapping "Donald Trump" to "Trump" would
+#: collapse distinct people and belongs to a pass that can check whether it is right.
+_ALIASES = {
+    "U. S": "United States",
+    "U.S": "United States",
+    "U.S.": "United States",
+    "US": "United States",
+    "USA": "United States",
+    "U. S. A": "United States",
+    "U. K": "United Kingdom",
+    "U.K": "United Kingdom",
+    "UK": "United Kingdom",
+}
 
-    Left deliberately conservative: normalising harder ("Donald Trump" -> "Trump")
-    would collapse distinct entities and is entity RESOLUTION, a different problem with
-    a different failure mode.
+
+def _clean(surface: str) -> str:
+    """Repair the tagger's spelling of an entity, and nothing more.
+
+    Conservative on purpose. Everything here either removes characters the model added
+    (stray punctuation, a leading article) or corrects a spelling the model produced
+    that no source wrote.
     """
-    text = surface.strip().strip(".,;:!?\"'()[]").strip()
+    text = surface.strip()
+    # The aggregator inserts spaces around punctuation it rejoined: "U. S", "O ' Brien".
+    text = text.replace(" .", ".").replace(" '", "'").replace(" - ", "-")
+    text = text.strip(".,;:!?\"'()[]").strip()
     for article in ("the ", "The ", "a ", "A ", "an ", "An "):
         if text.startswith(article):
             text = text[len(article) :]
-    return text.strip()
+    text = text.strip()
+    return _ALIASES.get(text, text)
 
 
 def extract(text: str) -> list[dict[str, object]]:

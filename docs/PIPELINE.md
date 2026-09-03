@@ -15,7 +15,7 @@ From discovery to distribution. Every stage names where it runs (VPS or DESKTOP)
 | 3 | Normalization | VPS | inline with ingest |
 | 4 | Cheap deduplication | VPS | inline with ingest |
 | 5 | Embedding | DESKTOP | job `embed` |
-| 6 | Story clustering | DESKTOP | job `cluster` |
+| 6 | Story clustering | VPS (ADR-0015) | inline; consolidation is a desktop job |
 | 7 | US relevance scoring | DESKTOP | job `score` |
 | 8 | Virality scoring | DESKTOP + VPS signals | job `score` + beat signal capture |
 | 9 | Importance scoring | DESKTOP | job `score` |
@@ -99,6 +99,8 @@ Incremental, online:
 4. Periodic consolidation pass (HDBSCAN over the last 24 h) merges clusters that drifted apart, and splits clusters whose intra-similarity collapsed.
 
 Entity overlap is required because embeddings alone happily merge "shooting in Ohio" with "shooting in Nevada". That is a correctness guard, not an optimization.
+
+The shared entity must **discriminate**: `OTHER`-typed entities never qualify, and neither does one appearing in more than `ENTITY_GUARD_MAX_DOC_FRACTION` of the corpus. Measured against the first 152 articles, "United States" appeared in 18% of them — a bare "≥ 1 shared entity" rule would have let any two US stories merge. See ADR-0017.
 
 Merges are recorded so a story's identity is auditable.
 

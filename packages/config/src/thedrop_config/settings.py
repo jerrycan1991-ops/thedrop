@@ -126,6 +126,15 @@ class AISettings(BaseSettings):
     entity_max_batches_per_tick: int = Field(
         default=8, ge=1, le=64, alias="ENTITY_MAX_BATCHES_PER_TICK"
     )
+    #: An entity in more than this share of the corpus stops discriminating and may not
+    #: license a cluster join. Measured, not guessed: "United States" appeared in 18% of
+    #: the first 152 articles, which would have let any two US stories merge.
+    entity_guard_max_doc_fraction: float = Field(
+        default=0.10, gt=0, le=1, alias="ENTITY_GUARD_MAX_DOC_FRACTION"
+    )
+    #: Floor below which the fraction is ignored. A young corpus otherwise excludes
+    #: everything -- at 20 articles a 10% ceiling rejects anything seen twice.
+    entity_guard_min_doc_floor: int = Field(default=5, ge=1, alias="ENTITY_GUARD_MIN_DOC_FLOOR")
 
     daily_budget_usd: float = Field(default=0.0, ge=0, alias="DAILY_AI_BUDGET_USD")
     monthly_budget_usd: float = Field(default=0.0, ge=0, alias="MONTHLY_AI_BUDGET_USD")
