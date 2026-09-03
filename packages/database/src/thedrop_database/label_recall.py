@@ -33,6 +33,7 @@ import sys
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 
 from thedrop_database import engine, session_scope
@@ -175,6 +176,34 @@ def _describe(db, story_id: int) -> list[str]:
     return [f"{domain:<22} {title[:60]}" for domain, title in rows]
 
 
+def ordered_pair(a: int, b: int) -> tuple[int, int]:
+    """Lower id first, so one judgement is stored once however the pair is reached.
+
+    Both directions occur in a single run: judging story 10 against its nearest
+    neighbour 11 does not stop 11 coming up later with 10 as ITS nearest neighbour.
+    """
+    return (a, b) if a < b else (b, a)
+
+
+def already_judged(db, a: int, b: int) -> bool:
+    """Whether this pair has a verdict, checked at the moment of use.
+
+    The candidate list is built once at startup, so it cannot know about pairs judged
+    during the run. Relying on it alone crashed the first real session with a unique
+    violation on (10, 11) -- and worse than the crash, it would have asked the same
+    question twice.
+    """
+    low, high = ordered_pair(a, b)
+    return (
+        db.scalar(
+            select(func.count(StoryPairLabel.id)).where(
+                StoryPairLabel.story_id == low, StoryPairLabel.other_story_id == high
+            )
+        )
+        or 0
+    ) > 0
+
+
 def report() -> int:
     with session_scope() as db:
         rows = db.execute(
@@ -243,6 +272,9 @@ def label(limit: int) -> int:
             candidate = nearest_other(db, story_id)
             if candidate is None:
                 continue
+            if already_judged(db, story_id, candidate.other_id):
+                # Judged earlier in this same run, from the other side.
+                continue
 
             print(f"story {story_id}")
             for line in _describe(db, story_id):
@@ -267,9 +299,13 @@ def label(limit: int) -> int:
                     break
                 print("  no default -- answer y, n, u, or q")
 
-            low, high = sorted((story_id, candidate.other_id))
-            db.add(
-                StoryPairLabel(
+            low, high = ordered_pair(story_id, candidate.other_id)
+            # ON CONFLICT as well as the check above: the check is what stops the same
+            # question being ASKED twice, this is what stops an answer being lost to a
+            # crash if one slips through anyway.
+            db.execute(
+                pg_insert(StoryPairLabel)
+                .values(
                     story_id=low,
                     other_story_id=high,
                     verdict=verdict,
@@ -277,6 +313,7 @@ def label(limit: int) -> int:
                     shared_entities=candidate.shared_entities,
                     labelled_by=who[:64],
                 )
+                .on_conflict_do_nothing(constraint="uq_story_pair_labels_pair")
             )
             print("")
 

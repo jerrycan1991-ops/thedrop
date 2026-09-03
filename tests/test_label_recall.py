@@ -81,3 +81,21 @@ def test_unsure_and_different_do_not_enter_the_ratio() -> None:
 
 def test_recall_of_nothing_is_not_a_number() -> None:
     assert recall({}, joined_correctly=0) is None
+
+
+# ------------------------------------------------------------------ pair order
+
+
+@pytest.mark.parametrize(("a", "b"), [(10, 11), (11, 10)])
+def test_a_pair_has_one_representation(a: int, b: int) -> None:
+    """The regression.
+
+    The candidate list is built once at startup, so judging story 10 against its
+    nearest neighbour 11 does not stop 11 coming up later with 10 as its own nearest
+    neighbour. The first real session crashed on exactly that, with a unique violation
+    on (10, 11) — and worse than the crash, it would have asked the same question
+    twice.
+    """
+    from thedrop_database.label_recall import ordered_pair
+
+    assert ordered_pair(a, b) == (10, 11)
