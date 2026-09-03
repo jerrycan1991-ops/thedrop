@@ -104,6 +104,12 @@ class Story(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
 
     risk_tier: Mapped[str] = mapped_column(String(16), default=RiskTier.STANDARD, nullable=False)
     risk_reasons: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
+    #: When claim extraction last ran for this story, successfully or not. Set on
+    #: every attempt, not just a successful one -- without it, a failed extraction
+    #: (which leaves no `claims` rows) is indistinguishable from "never attempted",
+    #: and a future dispatch query built on "does this story have claims yet" would
+    #: retry a consistently-failing story forever instead of surfacing it.
+    claims_extracted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     #: Carried into the evidence packet rather than silently dropped: what the sources
     #: disagree about, and what none of them answered.

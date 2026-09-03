@@ -165,6 +165,7 @@ class Runner:
     _DELIVERABLE: ClassVar[dict[str, str]] = {
         "embeddings": "store_embeddings",
         "articleEntities": "store_entities",
+        "storyClaims": "store_claims",
     }
 
     def _deliver_side_effects(self, job: Job, result: dict[str, Any]) -> dict[str, Any] | None:
@@ -205,8 +206,10 @@ class Runner:
             return None
         except ApiUnavailableError as exc:
             # The work is done but undeliverable. Leave the job leased: it expires, the
-            # reaper requeues it, and the batch is simply embedded again.
-            logger.warning("could not store embeddings for %s (lease will expire): %s", job.id, exc)
+            # reaper requeues it, and the batch is simply redone.
+            logger.warning(
+                "could not store %s for %s (lease will expire): %s", key, job.id, exc
+            )
             return None
 
         summary = {name: value for name, value in result.items() if name != key}

@@ -13,16 +13,26 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from thedrop_database.clustering import resync_story_entities
-from thedrop_database.enums import EntityType, JobStatus, WorkerStatus
-from thedrop_database.models import Entity, Job, RawArticle, RawArticleEntity
+from thedrop_database.enums import EntityType, JobStatus, RiskTier, WorkerStatus
+from thedrop_database.models import (
+    AiRun,
+    Claim,
+    ClaimEvidence,
+    Entity,
+    Job,
+    RawArticle,
+    RawArticleEntity,
+    Story,
+)
 
 from app.deps import SessionDep, SettingsDep, WorkerDep
 
@@ -93,6 +103,55 @@ class ArticleEntities(BaseModel):
 class EntitiesRequest(BaseModel):
     model: str = Field(max_length=128)
     items: list[ArticleEntities] = Field(min_length=1, max_length=64)
+
+
+class ExtractedClaimEvidence(BaseModel):
+    source_article_id: str = Field(max_length=64)
+    quote: str = Field(min_length=1, max_length=4000)
+
+
+class ExtractedClaimItem(BaseModel):
+    claim_text: str = Field(min_length=1, max_length=2000)
+    claim_type: str = Field(max_length=24)
+    attributed_to: str | None = Field(default=None, max_length=255)
+    confidence: int = Field(ge=0, le=100)
+    evidence: list[ExtractedClaimEvidence] = Field(min_length=1, max_length=16)
+
+
+class StoryClaims(BaseModel):
+    """One story's extraction result, or its failure.
+
+    `error` and `claims` are mutually exclusive in practice (agent.claims.extract()
+    either returns a validated result or raises), but both are optional here rather
+    than one being required -- a story that genuinely found zero claims is not an
+    error, and must still mark `claims_extracted_at` the same way an unknown article
+    still marks `entities_extracted_at` in `store_entities`.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    story_id: str = Field(max_length=64, alias="storyId")
+    claims: list[ExtractedClaimItem] = Field(default_factory=list, max_length=64)
+    injection_detected: bool = Field(default=False, alias="injectionDetected")
+    risk_tier: str | None = Field(default=None, max_length=16, alias="riskTier")
+    risk_reasons: list[str] = Field(default_factory=list, alias="riskReasons")
+    error: str | None = Field(default=None, max_length=4000)
+
+
+class ClaimsRequest(BaseModel):
+    model: str = Field(max_length=128)
+    items: list[StoryClaims] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _successful_items_carry_a_risk_tier(self) -> ClaimsRequest:
+        # No default on a missing risk_tier, mirroring agent.claims.ExtractionResult's
+        # own rule: silently treating an absent assessment as "standard" would defeat
+        # the whole point of asking for one. A story reported as failed (item.error
+        # set) legitimately has no risk_tier -- extraction never produced a result.
+        for item in self.items:
+            if item.error is None and item.risk_tier is None:
+                raise ValueError(f"{item.story_id}: risk_tier is required when error is not set")
+        return self
 
 
 class CompleteRequest(BaseModel):
@@ -410,6 +469,206 @@ def store_entities(payload: EntitiesRequest, node: WorkerDep, db: SessionDep) ->
         extra={"worker": node.name, "articles": len(payload.items), "entities": stored},
     )
     return {"articles": len(payload.items) - len(unknown), "entities": stored, "unknown": unknown}
+
+
+def _parse_uuid(value: str) -> uuid.UUID | None:
+    """A public_id that fails to parse is "not found", not a crash.
+
+    Comparing a UUID column against a malformed string raises at the database level and
+    leaves the transaction unusable for anything that runs after it in the same
+    request -- unlike an ordinary "no row matched", which is silent. `source_article_id`
+    values here are model output, not a guaranteed-well-formed system value, so a
+    malformed one (truncation, a hallucinated id) is a real possibility this endpoint
+    processes many items per request, and one bad id must not take the rest down with
+    it. Validated in Python first, before it ever reaches a query.
+    """
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+@router.post("/claims")
+def store_claims(payload: ClaimsRequest, node: WorkerDep, db: SessionDep) -> dict[str, Any]:
+    """Write desktop-extracted claims (PIPELINE.md §10-11).
+
+    A story's `claims_extracted_at` is set on EVERY attempt in this payload, success or
+    failure -- see the migration that added the column. A story reported with `error`
+    gets an `ai_runs` row (status `invalid_output`) and nothing else; its existing
+    claims, if any, are left untouched rather than cleared, since a failed re-attempt
+    should not delete a previously-successful extraction.
+
+    A successful story's claim set is REPLACED, not merged -- same reasoning as
+    `store_entities`: re-extraction after a prompt change or a requeued job must not
+    leave two different runs' claims mixed in one story with no way to tell which came
+    from where. `ClaimEvidence` cascades on `claim_id`, so deleting a story's `claims`
+    rows cleans up their evidence automatically.
+
+    `attributed_to` is resolved to an `entities` row the same way `store_entities`
+    resolves NER output: by (canonical_name, entity_type), upserted. Always typed
+    OTHER here -- extraction does not classify who it is, only that a claim named
+    them, and OTHER is honest about that rather than guessing a type nobody predicted.
+
+    A claim whose evidence entries ALL cite an article we don't recognise is dropped
+    entirely rather than stored with no evidence: DATABASE.md is explicit that
+    `claim_evidence` is what makes a claim auditable, not decorative, so a claim with
+    none of it stored would be an assertion with nothing behind it.
+
+    `provider` is inferred from the model name (`claude-` prefix vs. anything else)
+    rather than sent explicitly -- the desktop's generic embeddings/entities/claims
+    delivery mechanism posts a fixed (model, items) pair per deliverable type, and
+    adding a third field there for this alone was not worth the wider protocol change.
+    """
+    provider = "anthropic" if payload.model.startswith("claude-") else "ollama"
+    now = datetime.now(UTC)
+    unknown_stories: list[str] = []
+    stored_claims = 0
+    failed_stories = 0
+
+    for item in payload.items:
+        parsed_story_id = _parse_uuid(item.story_id)
+        story_id = (
+            db.scalar(select(Story.id).where(Story.public_id == parsed_story_id))
+            if parsed_story_id is not None
+            else None
+        )
+        if story_id is None:
+            unknown_stories.append(item.story_id)
+            continue
+
+        db.execute(update(Story).where(Story.id == story_id).values(claims_extracted_at=now))
+
+        if item.error is not None:
+            failed_stories += 1
+            db.add(
+                AiRun(
+                    story_id=story_id,
+                    purpose="extract",
+                    provider=provider,
+                    model=payload.model,
+                    status="invalid_output",
+                    error=item.error[:4000],
+                )
+            )
+            continue
+
+        db.execute(delete(Claim).where(Claim.story_id == story_id))
+        db.execute(
+            update(Story)
+            .where(Story.id == story_id)
+            .values(
+                risk_tier=item.risk_tier or RiskTier.STANDARD,
+                risk_reasons=item.risk_reasons,
+            )
+        )
+
+        for extracted in item.claims:
+            attributed_to_id: int | None = None
+            if extracted.attributed_to:
+                attributed_to_id = db.execute(
+                    pg_insert(Entity)
+                    .values(canonical_name=extracted.attributed_to, entity_type=EntityType.OTHER)
+                    .on_conflict_do_update(
+                        constraint="uq_entities_name_type",
+                        set_={"canonical_name": extracted.attributed_to},
+                    )
+                    .returning(Entity.id)
+                ).scalar_one()
+
+            resolved_evidence: list[tuple[int, int, str, str]] = []
+            source_ids: set[int] = set()
+            first_asserted_at: datetime | None = None
+            for ev in extracted.evidence:
+                parsed_article_id = _parse_uuid(ev.source_article_id)
+                row = (
+                    db.execute(
+                        select(
+                            RawArticle.id,
+                            RawArticle.source_id,
+                            RawArticle.canonical_url,
+                            RawArticle.published_at,
+                        ).where(RawArticle.public_id == parsed_article_id)
+                    ).one_or_none()
+                    if parsed_article_id is not None
+                    else None
+                )
+                if row is None:
+                    continue
+                raw_article_id, source_id, url, published_at = row
+                resolved_evidence.append((raw_article_id, source_id, url, ev.quote))
+                source_ids.add(source_id)
+                if published_at is not None and (
+                    first_asserted_at is None or published_at < first_asserted_at
+                ):
+                    first_asserted_at = published_at
+
+            if not resolved_evidence:
+                # Every cited article is unknown to us -- nothing left to attach this
+                # claim to. Dropped, not stored bare: see the docstring.
+                continue
+
+            claim = Claim(
+                story_id=story_id,
+                claim_text=extracted.claim_text,
+                claim_type=extracted.claim_type,
+                attributed_to_entity_id=attributed_to_id,
+                confidence=extracted.confidence,
+                supporting_source_count=len(source_ids),
+                first_asserted_at=first_asserted_at,
+            )
+            db.add(claim)
+            db.flush()
+
+            for raw_article_id, source_id, url, quote in resolved_evidence:
+                db.add(
+                    ClaimEvidence(
+                        claim_id=claim.id,
+                        raw_article_id=raw_article_id,
+                        source_id=source_id,
+                        quote=quote,
+                        url=url,
+                        stance="supports",
+                    )
+                )
+            stored_claims += 1
+
+        db.add(
+            AiRun(
+                story_id=story_id,
+                purpose="extract",
+                provider=provider,
+                model=payload.model,
+                status="ok",
+                response_meta={"injectionDetected": item.injection_detected},
+            )
+        )
+
+    db.commit()
+
+    if unknown_stories:
+        logger.warning(
+            "claims for unknown stories",
+            extra={"worker": node.name, "count": len(unknown_stories)},
+        )
+    logger.info(
+        "claims stored",
+        extra={
+            "worker": node.name,
+            "stories": len(payload.items) - len(unknown_stories),
+            "claims": stored_claims,
+            "failed": failed_stories,
+        },
+    )
+    return {
+        # "stored" matches embeddings'/entities' contract -- runner.py's generic
+        # delivery mechanism reads this key from every deliverable's response
+        # uniformly. Here it counts stories processed, the item-level unit for this
+        # endpoint, the same way "stored" counts articles for the other two.
+        "stored": len(payload.items) - len(unknown_stories),
+        "claims": stored_claims,
+        "failed": failed_stories,
+        "unknown": unknown_stories,
+    }
 
 
 @router.get("/status")

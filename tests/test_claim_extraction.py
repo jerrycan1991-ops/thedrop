@@ -54,6 +54,8 @@ VALID_RESPONSE = {
         }
     ],
     "injection_detected": False,
+    "risk_tier": "standard",
+    "risk_reasons": [],
 }
 
 
@@ -171,6 +173,8 @@ def test_extract_retries_once_when_attribution_is_missing(
             }
         ],
         "injection_detected": False,
+        "risk_tier": "high",
+        "risk_reasons": ["allegations against a named individual"],
     }
     responses = iter(
         [
@@ -235,3 +239,42 @@ def test_a_claim_needs_at_least_one_evidence_entry() -> None:
             confidence=50,
             evidence=[],
         )
+
+
+# ---------------------------------------------------------------------- risk tier
+
+
+def test_a_response_missing_risk_tier_is_rejected() -> None:
+    """No default is intentional: a silently-missing risk_tier must fail validation
+    and retry, not be treated as "standard" -- the least cautious tier is exactly the
+    wrong thing to default to."""
+    with pytest.raises(ValidationError):
+        claims.ExtractionResult.model_validate(
+            {"claims": [], "injection_detected": False, "risk_reasons": []}
+        )
+
+
+def test_risk_reasons_defaults_to_empty() -> None:
+    result = claims.ExtractionResult.model_validate(
+        {"claims": [], "injection_detected": False, "risk_tier": "standard"}
+    )
+    assert result.risk_reasons == []
+
+
+def test_the_risk_tier_rules_are_pipeline_mds_own_criteria() -> None:
+    """Copied verbatim into the prompt, not paraphrased -- drift here would mean the
+    model is assigning risk against a rulebook nobody actually wrote down."""
+    for phrase in (
+        "elections",
+        "crime",
+        "deaths",
+        "legal accusations",
+        "health claims",
+        "financial-market claims",
+        "war/conflict",
+        "allegations against named",
+        "public safety",
+        "celebrity death/arrest",
+        "corporate wrongdoing",
+    ):
+        assert phrase in claims._RISK_TIER_RULES

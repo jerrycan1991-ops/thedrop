@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from agent import embedding, entities
+from agent import claims, embedding, entities
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,59 @@ def extract_entities(payload: dict[str, Any]) -> dict[str, Any]:
     return {"model": entities.model_name(), "articleEntities": results}
 
 
+@register("extract_claims")
+def extract_claims(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract atomic claims for a batch of stories (PIPELINE.md 10-11).
+
+    One `agent.claims.extract()` call per story -- its whole evidence packet at once,
+    not per article, matching how PIPELINE.md 12's evidence packet is assembled.
+    Returns results under `storyClaims`; the RUNNER posts them and strips them before
+    completing, the same reason embeddings/entities never reach `jobs.result`.
+
+    A story whose extraction fails validation twice (agent.claims.ExtractionFailedError)
+    is reported with an `error` field rather than omitted -- an omitted story would be
+    re-queued forever, the same reasoning `extract_entities` uses for returning an
+    empty list instead of skipping an article with no entities.
+    """
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise NonRetryableError("extract_claims payload has no items")
+
+    results: list[dict[str, Any]] = []
+    for item in items:
+        story_id = (item or {}).get("storyId")
+        articles = (item or {}).get("articles")
+        if not story_id or not isinstance(articles, list) or not articles:
+            raise NonRetryableError(
+                f"extract_claims item is missing storyId or articles: {item!r}"
+            )
+
+        try:
+            result = claims.extract(articles)
+        except claims.ExtractionFailedError as exc:
+            logger.warning(
+                "claim extraction failed for story", extra={"storyId": story_id, "error": str(exc)}
+            )
+            results.append({"storyId": str(story_id), "error": str(exc)})
+            continue
+
+        results.append(
+            {
+                "storyId": str(story_id),
+                "claims": [c.model_dump(mode="json") for c in result.claims],
+                "injectionDetected": result.injection_detected,
+                "riskTier": result.risk_tier,
+                "riskReasons": result.risk_reasons,
+            }
+        )
+
+    logger.info(
+        "extracted claims",
+        extra={"stories": len(results), "failed": sum(1 for r in results if "error" in r)},
+    )
+    return {"model": claims.model_name(), "storyClaims": results}
+
+
 if not entities.is_available():
     # Same fail-safe as embeddings: advertise only what this build can dispatch, so the
     # API never leases extraction to a desktop that cannot perform it.
@@ -152,6 +205,20 @@ if not entities.is_available():
     logger.warning(
         "transformers is not installed; not advertising 'extract_entities'. "
         "Install the desktop group: uv sync --group desktop-ml"
+    )
+
+
+if not claims.is_available():
+    # Unlike the two checks above, this is a live network probe, not an import check
+    # (agent.claims.is_available()'s docstring explains why) -- Ollama being down or
+    # not having pulled the configured model looks identical to "cannot do this work"
+    # from here, and the API must not lease claim extraction to a desktop that can't.
+    del _REGISTRY["extract_claims"]
+    logger.warning(
+        "ollama is unreachable or %s is not pulled; not advertising 'extract_claims'. "
+        "Run `ollama pull %s` and confirm Ollama is running.",
+        claims.model_name(),
+        claims.model_name(),
     )
 
 
