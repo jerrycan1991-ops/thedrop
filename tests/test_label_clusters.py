@@ -22,11 +22,25 @@ def placements(n: int) -> list[Placement]:
     ]
 
 
-@pytest.mark.parametrize("answer", ["y", "yes", "Y", "  y  ", ""])
+@pytest.mark.parametrize("answer", ["y", "yes", "Y", "  y  "])
 def test_yes_marks_every_placement_correct(answer: str) -> None:
-    """Empty counts as yes: most clusters are right, and a tool costing ten keystrokes
-    per story does not get used for two hundred articles."""
     assert set(parse_verdicts(answer, placements(3)).values()) == {"correct"}
+
+
+@pytest.mark.parametrize("answer", ["", "   ", "	"])
+def test_enter_alone_is_not_a_verdict(answer: str) -> None:
+    """The regression.
+
+    Enter used to mean "yes". The first labelling run then produced 71 correct and 0
+    wrong -- including three placements that had been independently flagged as
+    questionable an hour earlier, and a stray "y" that landed at the shell prompt after
+    the tool exited.
+
+    On a measurement whose entire value is deliberateness, a default makes the fastest
+    path through the tool the one that records agreement. Every verdict now costs a
+    keystroke.
+    """
+    assert parse_verdicts(answer, placements(3)) == {}
 
 
 @pytest.mark.parametrize("answer", ["n", "no", "N"])

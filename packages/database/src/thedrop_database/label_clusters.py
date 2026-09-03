@@ -57,8 +57,15 @@ def parse_verdicts(answer: str, placements: list[Placement]) -> dict[int, str] |
         s            unsure about all of them
         q            stop
 
-    The common case is one keystroke, because most clusters are right and a tool that
-    costs ten keystrokes per story does not get used for two hundred articles.
+    EVERY VERDICT NEEDS A KEYSTROKE. Enter on its own is not "yes" and never was
+    accepted as one after the first labelling run produced 71 correct and 0 wrong --
+    including three placements that had been independently flagged as questionable an
+    hour earlier, and a stray "y" that arrived at the shell prompt after the tool had
+    exited.
+
+    The tool made that easy. Enter-as-yes was chosen so labelling two hundred articles
+    would not be tedious, which on a measurement whose entire value is deliberateness
+    made the fastest path through the tool also the one that records agreement.
 
     An unparseable answer returns an empty dict, which the caller treats as "ask again"
     -- never as a verdict. Guessing what someone meant is how ground truth gets
@@ -67,7 +74,7 @@ def parse_verdicts(answer: str, placements: list[Placement]) -> dict[int, str] |
     answer = answer.strip().lower()
     if answer in {"q", "quit"}:
         return None
-    if answer in {"y", "yes", ""}:
+    if answer in {"y", "yes"}:
         return {p.article_id: "correct" for p in placements}
     if answer in {"n", "no"}:
         return {p.article_id: "wrong" for p in placements}
@@ -181,13 +188,28 @@ def label() -> int:
 
     with session_scope() as db:
         story_ids = _unlabelled_stories(db)
+        total_placements = (
+            db.scalar(
+                select(func.count(StorySource.id)).where(
+                    StorySource.is_primary.is_(False),
+                    StorySource.story_id.in_(story_ids) if story_ids else False,
+                )
+            )
+            or 0
+        )
 
     if not story_ids:
         print("nothing left to label")
         return report()
 
-    print(f"{len(story_ids)} unlabelled stories. y=all correct, n=all wrong,")
-    print("numbers=those are wrong (e.g. '2' or '1,3'), s=unsure, q=quit\n")
+    print(f"{len(story_ids)} unlabelled stories, {total_placements} placements.")
+    print("  y            every one is the same event as the founder")
+    print("  n            none of them are")
+    print("  2  or  1,3   those are wrong, the rest are right")
+    print("  s            unsure")
+    print("  q            stop (progress is kept)")
+    print("There is no default; Enter on its own asks again.")
+    print("")
 
     for story_id in story_ids:
         with session_scope() as db:
@@ -213,7 +235,7 @@ def label() -> int:
                     return report()
                 if verdicts:
                     break
-                print("  did not understand that; y / n / numbers / s / q")
+                print("  no default -- answer y, n, a number, s, or q")
 
             for item in placements:
                 db.add(
@@ -229,9 +251,45 @@ def label() -> int:
     return report()
 
 
+def reset() -> int:
+    """Delete every label, after an explicit confirmation typed in full.
+
+    Labels are evidence. Deleting them is sometimes right -- a set produced faster than
+    it was read is worse than no set, because it is the number that gets quoted later
+    when deciding not to change something -- but it must be a deliberate act, not a
+    flag someone tabs past.
+    """
+    with session_scope() as db:
+        existing = db.scalar(select(func.count(ClusterLabel.id))) or 0
+
+    if not existing:
+        print("no labels to clear")
+        return 0
+
+    print(f"This deletes {existing} labels permanently.")
+    try:
+        answer = input("Type 'delete labels' to confirm: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    if answer.strip().lower() != "delete labels":
+        print("not confirmed; nothing was deleted")
+        return 1
+
+    with session_scope() as db:
+        db.query(ClusterLabel).delete()
+    print(f"deleted {existing} labels")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", action="store_true", help="print the numbers and exit")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="delete every label, after typing a confirmation in full",
+    )
     args = parser.parse_args(argv)
 
     loaded = load_operator_env()
@@ -240,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         print("")
 
     try:
+        if args.reset:
+            return reset()
         return report() if args.report else label()
     except OperationalError:
         url = engine().url
