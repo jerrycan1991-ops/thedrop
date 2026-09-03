@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from thedrop_database import engine
 from thedrop_database.clustering import (
+    cluster_article,
     guard_entity_ids,
     overexposed_entity_ids,
     overexposure_threshold,
@@ -35,6 +36,7 @@ from thedrop_database.models import (
     Source,
     Story,
     StoryEntity,
+    StorySource,
 )
 
 pytestmark = pytest.mark.db
@@ -311,3 +313,151 @@ def test_a_subdomain_publisher_is_matched_on_every_label(db: Session, provider: 
     link(db, art, masthead)
 
     assert masthead.id not in guard_entity_ids(db, art.id, max_fraction=0.10, min_floor=5)
+
+
+# ------------------------------------------------------------- join or create
+
+# Vectors are built by hand so similarity is exact rather than whatever the model
+# happens to produce. Two articles about the same event have near-identical embeddings;
+# the guard is what has to separate two near-identical articles about DIFFERENT events,
+# which is precisely the case a similarity threshold cannot see.
+
+
+def vector(seed: int, tilt: float = 0.0) -> list[float]:
+    """A unit-ish vector. `tilt` moves it away from the base direction."""
+    v = [0.0] * 384
+    v[seed % 384] = 1.0
+    if tilt:
+        v[(seed + 1) % 384] = tilt
+    return v
+
+
+def embedded_article(
+    db: Session, provider: Provider, src: Source, n: int, vec: list[float]
+) -> RawArticle:
+    art = article_from(db, provider, src, n)
+    art.embedding = vec
+    art.embedded_at = datetime.now(UTC)
+    db.flush()
+    return art
+
+
+def test_two_near_identical_articles_about_different_events_do_not_merge(
+    db: Session, provider: Provider
+) -> None:
+    """The whole reason the guard exists.
+
+    Both articles are 99.5% similar — the wording of two shootings is nearly the same —
+    so a similarity threshold alone merges them. Only the place names separate them.
+    """
+    src = named_source(db, "pytest-wire.invalid")
+    ohio = embedded_article(db, provider, src, 100, vector(5, 0.1))
+    nevada = embedded_article(db, provider, src, 101, vector(5, 0.1))
+    link(db, ohio, exact_entity(db, "pytest-dayton", "PLACE"))
+    link(db, nevada, exact_entity(db, "pytest-reno", "PLACE"))
+
+    first = cluster_article(db, ohio, join_threshold=0.5)
+    second = cluster_article(db, nevada, join_threshold=0.5)
+
+    assert not second.joined, "two different events were merged into one story"
+    assert first.story_id != second.story_id
+
+
+def test_two_accounts_of_the_same_event_do_merge(
+    db: Session, provider: Provider
+) -> None:
+    """The guard must not be so strict that nothing clusters."""
+    src = named_source(db, "pytest-wire2.invalid")
+    shared_entity = exact_entity(db, "pytest-dayton2", "PLACE")
+    first_article = embedded_article(db, provider, src, 110, vector(7))
+    second_article = embedded_article(db, provider, src, 111, vector(7, 0.05))
+    link(db, first_article, shared_entity)
+    link(db, second_article, shared_entity)
+
+    founded = cluster_article(db, first_article, join_threshold=0.5)
+    joined = cluster_article(db, second_article, join_threshold=0.5)
+
+    assert joined.joined
+    assert joined.story_id == founded.story_id
+    assert joined.similarity is not None
+    assert joined.similarity > 0.5
+    assert joined.shared_entities == 1
+
+
+def test_a_shared_entity_alone_does_not_merge_dissimilar_articles(
+    db: Session, provider: Provider
+) -> None:
+    """Both conditions are required. Two unrelated stories about the same senator share
+    an entity and must still stay apart."""
+    src = named_source(db, "pytest-wire3.invalid")
+    senator = exact_entity(db, "pytest-senator", "PERSON")
+    budget = embedded_article(db, provider, src, 120, vector(11))
+    scandal = embedded_article(db, provider, src, 121, vector(200))
+    link(db, budget, senator)
+    link(db, scandal, senator)
+
+    founded = cluster_article(db, budget, join_threshold=0.82)
+    other = cluster_article(db, scandal, join_threshold=0.82)
+
+    assert not other.joined
+    assert other.story_id != founded.story_id
+
+
+def test_membership_and_centroid_are_recorded(db: Session, provider: Provider) -> None:
+    """A join must be auditable: the similarity that justified it is stored, because the
+    centroid moves afterwards and the number cannot be recomputed."""
+    src = named_source(db, "pytest-wire4.invalid")
+    shared_entity = exact_entity(db, "pytest-place4", "PLACE")
+    a = embedded_article(db, provider, src, 130, vector(13))
+    b = embedded_article(db, provider, src, 131, vector(13, 0.05))
+    link(db, a, shared_entity)
+    link(db, b, shared_entity)
+
+    founded = cluster_article(db, a, join_threshold=0.5)
+    cluster_article(db, b, join_threshold=0.5)
+
+    members = db.scalars(
+        select(StorySource).where(StorySource.story_id == founded.story_id)
+    ).all()
+    assert len(members) == 2
+    assert any(m.is_primary for m in members)
+    assert any(m.similarity is not None for m in members)
+
+    story = db.get(Story, founded.story_id)
+    assert story is not None
+    assert story.centroid is not None
+    assert story.source_count == 1, "both articles came from one source"
+
+
+def test_independent_source_count_is_never_inferred(
+    db: Session, provider: Provider
+) -> None:
+    """ADR-0013: nothing may infer independence from source identity. Forty outlets
+    carrying one wire story are forty sources and one witness, so a corroboration rule
+    downstream must not find a number here that was guessed."""
+    src = named_source(db, "pytest-wire5.invalid")
+    art = embedded_article(db, provider, src, 140, vector(17))
+    link(db, art, exact_entity(db, "pytest-place5", "PLACE"))
+
+    decision = cluster_article(db, art)
+    story = db.get(Story, decision.story_id)
+
+    assert story is not None
+    assert story.independent_source_count == 0
+
+
+def test_an_article_without_entities_founds_its_own_story(
+    db: Session, provider: Provider
+) -> None:
+    """No discriminative entity means nothing says which event it belongs to. Founding a
+    story is the correct answer, not an error."""
+    src = named_source(db, "pytest-wire6.invalid")
+    a = embedded_article(db, provider, src, 150, vector(19))
+    b = embedded_article(db, provider, src, 151, vector(19))
+    link(db, a, exact_entity(db, "pytest-place6", "PLACE"))
+
+    founded = cluster_article(db, a, join_threshold=0.5)
+    orphan = cluster_article(db, b, join_threshold=0.5)
+
+    assert not orphan.joined
+    assert orphan.story_id != founded.story_id

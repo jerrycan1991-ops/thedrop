@@ -48,6 +48,22 @@ limit 10
 
 _STORIES = "select status, count(*) as n from stories group by status order by status"
 
+#: The honest measure of clustering. Every story holding one article means the guard is
+#: refusing everything; a handful of stories holding all of them means it is refusing
+#: nothing. Both are failures, and the counts distinguish them at a glance.
+_CLUSTER_SHAPE = """
+select
+  count(*)                            as stories,
+  coalesce(sum(members), 0)           as clustered_articles,
+  coalesce(max(members), 0)           as largest,
+  count(*) filter (where members = 1) as singletons
+from (
+  select story_id, count(*) as members
+  from story_sources
+  group by story_id
+) s
+"""
+
 
 def main() -> int:
     with engine().connect() as conn:
@@ -72,6 +88,13 @@ def main() -> int:
         for row in rows:
             print(f"  {row.status:<20} {row.n}")
 
+        shape = conn.execute(text(_CLUSTER_SHAPE)).one()
+        print("")
+        print("clustering")
+        print(f"  stories            {shape.stories}")
+        print(f"  articles in them   {shape.clustered_articles}")
+        print(f"  largest story      {shape.largest}")
+        print(f"  single-article     {shape.singletons}")
         print("\ntop entities")
         rows = conn.execute(text(_TOP_ENTITIES)).all()
         if not rows:

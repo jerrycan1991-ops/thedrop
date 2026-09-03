@@ -28,6 +28,7 @@ celery_app = Celery(
         "app.tasks.ingest",
         "app.tasks.embed",
         "app.tasks.extract",
+        "app.tasks.cluster",
         "app.tasks.publish",
     ],
 )
@@ -60,6 +61,7 @@ celery_app.conf.update(
         # with beat publishing every 120s and nothing ever running.
         "app.tasks.embed.*": {"queue": "maintain"},
         "app.tasks.extract.*": {"queue": "maintain"},
+        "app.tasks.cluster.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
 )
@@ -94,6 +96,13 @@ celery_app.conf.beat_schedule = {
     "dispatch-extraction-batches": {
         "task": "app.tasks.extract.dispatch_extraction_batches",
         "schedule": 180.0,
+    },
+    # Clustering is pure SQL and arithmetic on the VPS (ADR-0015), so it can run more
+    # often than the desktop-bound stages. It only acts on articles that are both
+    # embedded and extracted, so it naturally waits for them.
+    "cluster-ready-articles": {
+        "task": "app.tasks.cluster.cluster_ready_articles",
+        "schedule": 90.0,
     },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",

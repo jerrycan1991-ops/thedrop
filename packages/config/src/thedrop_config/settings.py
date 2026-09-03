@@ -136,6 +136,19 @@ class AISettings(BaseSettings):
     #: everything -- at 20 articles a 10% ceiling rejects anything seen twice.
     entity_guard_min_doc_floor: int = Field(default=5, ge=1, alias="ENTITY_GUARD_MIN_DOC_FLOOR")
 
+    #: Cosine similarity at or above which an article may join a story -- PIPELINE.md 6.
+    #: The entity guard applies independently; both are required and neither substitutes
+    #: for the other.
+    cluster_join_threshold: float = Field(default=0.82, gt=0, le=1, alias="CLUSTER_JOIN_THRESHOLD")
+    #: How far back a story stays open to new members. A story nobody has written about
+    #: in two days is over; a later article on the subject is a follow-up, not a member.
+    cluster_window_hours: int = Field(default=48, ge=1, alias="CLUSTER_WINDOW_HOURS")
+    #: Nearest centroids considered per article. If the right cluster is not in the top
+    #: ten by cosine distance, it is not the right cluster.
+    cluster_candidate_limit: int = Field(default=10, ge=1, le=100, alias="CLUSTER_CANDIDATE_LIMIT")
+    #: Articles clustered per tick. Bounds a cold start on a large backlog.
+    cluster_max_per_tick: int = Field(default=200, ge=1, le=5000, alias="CLUSTER_MAX_PER_TICK")
+
     daily_budget_usd: float = Field(default=0.0, ge=0, alias="DAILY_AI_BUDGET_USD")
     monthly_budget_usd: float = Field(default=0.0, ge=0, alias="MONTHLY_AI_BUDGET_USD")
     budget_action_on_breach: BudgetAction = Field(

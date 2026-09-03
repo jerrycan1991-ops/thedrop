@@ -38,12 +38,23 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from thedrop_database.enums import EntityType
-from thedrop_database.models import Entity, RawArticle, RawArticleEntity, Source, StoryEntity
+from thedrop_database.models import (
+    Entity,
+    RawArticle,
+    RawArticleEntity,
+    Source,
+    Story,
+    StoryEntity,
+    StorySource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,3 +190,268 @@ def shared_guard_entities(
         db.execute(select(StoryEntity.entity_id).where(StoryEntity.story_id == story_id)).scalars()
     )
     return article & story
+
+
+# --------------------------------------------------------------- join or create
+
+#: PIPELINE.md §6 defaults. Overridden from config by the caller; repeated here so this
+#: module is usable from a script or a test without constructing Settings.
+DEFAULT_JOIN_THRESHOLD = 0.82
+DEFAULT_WINDOW_HOURS = 48
+DEFAULT_CANDIDATE_LIMIT = 10
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What happened to one article, and why.
+
+    `similarity` and `shared_entities` are recorded rather than recomputed: the centroid
+    moves as members are added, so the numbers that justified a join are not
+    reproducible afterwards. Keeping them is what makes a cluster auditable.
+    """
+
+    article_id: int
+    story_id: int
+    joined: bool
+    similarity: float | None = None
+    shared_entities: int = 0
+    reason: str = ""
+
+
+def pending_clustering_count(db: Session) -> int:
+    return (
+        db.scalar(
+            select(func.count(RawArticle.id)).where(
+                RawArticle.story_id.is_(None),
+                RawArticle.embedding.is_not(None),
+                RawArticle.entities_extracted_at.is_not(None),
+            )
+        )
+        or 0
+    )
+
+
+def _candidates(
+    db: Session, embedding: list[float], *, window_hours: int, limit: int
+) -> list[tuple[int, float]]:
+    """(story_id, cosine similarity) for the nearest recently-active stories.
+
+    The time filter comes first so the scan is bounded by activity rather than by the
+    whole table. `<=>` is cosine DISTANCE -- 0 identical, 1 orthogonal -- so similarity
+    is `1 - distance`, verified against the server rather than assumed.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    distance = Story.centroid.cosine_distance(embedding)
+    rows = db.execute(
+        select(Story.id, distance.label("distance"))
+        .where(Story.centroid.is_not(None), Story.last_activity_at >= cutoff)
+        .order_by(distance)
+        .limit(limit)
+    ).all()
+    return [(story_id, 1.0 - float(dist)) for story_id, dist in rows]
+
+
+def _promote_entities(db: Session, article_id: int, story_id: int) -> None:
+    """Copy an article's entities onto its story.
+
+    ALL of them, not just the discriminative ones. The guard filters at read time, and
+    an entity that is too common today may not be next month -- storing only what
+    currently passes would bake one moment's corpus statistics into the data.
+    """
+    rows = db.execute(
+        select(RawArticleEntity.entity_id, RawArticleEntity.mention_count).where(
+            RawArticleEntity.raw_article_id == article_id
+        )
+    ).all()
+    for entity_id, mentions in rows:
+        db.execute(
+            pg_insert(StoryEntity)
+            .values(story_id=story_id, entity_id=entity_id, mention_count=mentions or 0)
+            .on_conflict_do_nothing(constraint="uq_story_entities_pair")
+        )
+
+
+def _recount_sources(db: Session, story_id: int) -> None:
+    """Refresh `source_count` from the membership.
+
+    `independent_source_count` is deliberately NOT derived here. ADR-0013 is explicit
+    that nothing may infer independence from source identity -- forty outlets carrying
+    one wire story are forty sources and one witness. Setting it to the distinct-source
+    count would be exactly that inference, and a corroboration rule downstream would
+    then read a number that means something else.
+    """
+    count = db.scalar(
+        select(func.count(func.distinct(RawArticle.source_id)))
+        .select_from(StorySource)
+        .join(RawArticle, RawArticle.id == StorySource.raw_article_id)
+        .where(StorySource.story_id == story_id)
+    )
+    db.execute(update(Story).where(Story.id == story_id).values(source_count=count or 0))
+
+
+def _update_centroid(db: Session, story_id: int, embedding: list[float]) -> None:
+    """Running mean over the story's members.
+
+    Not normalised: cosine distance ignores magnitude, so normalising would cost a pass
+    over 384 floats to change nothing. Computed from the member count so the mean is
+    exact rather than an exponential approximation that drifts with arrival order.
+    """
+    story = db.get(Story, story_id)
+    if story is None:
+        return
+    members = (
+        db.scalar(select(func.count(StorySource.id)).where(StorySource.story_id == story_id)) or 0
+    )
+    if story.centroid is None or members <= 1:
+        story.centroid = list(embedding)
+        return
+    previous = list(story.centroid)
+    n = members - 1
+    story.centroid = [(previous[i] * n + embedding[i]) / members for i in range(len(embedding))]
+
+
+def cluster_article(
+    db: Session,
+    article: RawArticle,
+    *,
+    join_threshold: float = DEFAULT_JOIN_THRESHOLD,
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+    candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
+    max_fraction: float = DEFAULT_MAX_DOC_FRACTION,
+    min_floor: int = DEFAULT_MIN_DOC_FLOOR,
+) -> Decision:
+    """Join one article to a story, or start a new one (PIPELINE.md §6).
+
+    BOTH conditions are required to join: cosine similarity at or above the threshold,
+    AND at least one shared discriminative entity. Neither substitutes for the other.
+    Similarity alone merges "shooting in Ohio" with "shooting in Nevada"; entities alone
+    merge every article that mentions the same senator.
+
+    Failing to join is never an error. It creates a story, which is over-splitting --
+    the safe direction under ADR-0015, because a duplicate story is visible and
+    mergeable while a story asserting facts about the wrong event is neither.
+    """
+    embedding = list(article.embedding or [])
+    if not embedding:
+        raise ValueError(f"article {article.id} has no embedding")
+
+    best_id: int | None = None
+    best_similarity = 0.0
+    shared: set[int] = set()
+
+    for story_id, similarity in _candidates(
+        db, embedding, window_hours=window_hours, limit=candidate_limit
+    ):
+        if similarity < join_threshold:
+            # Candidates come back ordered by distance, so once one is below the
+            # threshold every later one is too.
+            break
+        overlap = shared_guard_entities(
+            db, article.id, story_id, max_fraction=max_fraction, min_floor=min_floor
+        )
+        if overlap:
+            best_id, best_similarity, shared = story_id, similarity, overlap
+            break
+
+    now = datetime.now(UTC)
+
+    if best_id is None:
+        story = Story(
+            title=article.title,
+            centroid=list(embedding),
+            first_seen_at=now,
+            last_activity_at=now,
+        )
+        db.add(story)
+        db.flush()
+        db.add(
+            StorySource(
+                story_id=story.id,
+                raw_article_id=article.id,
+                similarity=None,
+                is_primary=True,
+            )
+        )
+        db.flush()
+        article.story_id = story.id
+        _promote_entities(db, article.id, story.id)
+        _recount_sources(db, story.id)
+        return Decision(
+            article_id=article.id,
+            story_id=story.id,
+            joined=False,
+            reason="no candidate cleared both the similarity threshold and the entity guard",
+        )
+
+    db.add(
+        StorySource(
+            story_id=best_id,
+            raw_article_id=article.id,
+            similarity=round(best_similarity, 4),
+            is_primary=False,
+        )
+    )
+    db.flush()
+    article.story_id = best_id
+    _promote_entities(db, article.id, best_id)
+    _update_centroid(db, best_id, embedding)
+    _recount_sources(db, best_id)
+    db.execute(update(Story).where(Story.id == best_id).values(last_activity_at=now))
+
+    return Decision(
+        article_id=article.id,
+        story_id=best_id,
+        joined=True,
+        similarity=round(best_similarity, 4),
+        shared_entities=len(shared),
+        reason="similarity and shared discriminative entity",
+    )
+
+
+def cluster_pending(
+    db: Session,
+    *,
+    limit: int = 200,
+    join_threshold: float = DEFAULT_JOIN_THRESHOLD,
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+    candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
+    max_fraction: float = DEFAULT_MAX_DOC_FRACTION,
+    min_floor: int = DEFAULT_MIN_DOC_FLOOR,
+) -> list[Decision]:
+    """Cluster articles that are ready, oldest first.
+
+    Ready means embedded AND extracted: an article missing either cannot be judged, and
+    clustering it on what is available would decide with half the evidence. Oldest first
+    because a story should be founded by the first article about it, not by whichever
+    happened to be processed first.
+    """
+    articles = db.scalars(
+        select(RawArticle)
+        .where(
+            RawArticle.story_id.is_(None),
+            RawArticle.embedding.is_not(None),
+            RawArticle.entities_extracted_at.is_not(None),
+        )
+        .order_by(RawArticle.published_at, RawArticle.id)
+        .limit(limit)
+    ).all()
+
+    decisions = [
+        cluster_article(
+            db,
+            article,
+            join_threshold=join_threshold,
+            window_hours=window_hours,
+            candidate_limit=candidate_limit,
+            max_fraction=max_fraction,
+            min_floor=min_floor,
+        )
+        for article in articles
+    ]
+    if decisions:
+        joined = sum(1 for d in decisions if d.joined)
+        logger.info(
+            "clustered articles",
+            extra={"articles": len(decisions), "joined": joined, "new": len(decisions) - joined},
+        )
+    return decisions
