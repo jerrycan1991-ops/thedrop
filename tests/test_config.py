@@ -70,6 +70,21 @@ class TestAISettings:
         # similarity comparison in the system.
         assert AISettings().embedding_dimensions == 384
 
+    def test_claim_extraction_needs_no_anthropic_key_on_the_ollama_path(self) -> None:
+        # is_usable requires an Anthropic key unconditionally -- claim_extraction_is_usable
+        # exists because the ollama provider must not be blocked by a check that is only
+        # about the anthropic provider. See ADR-0020.
+        settings = AISettings(AI_ENABLED=True, CLAIM_EXTRACT_PROVIDER="ollama")
+        assert settings.claim_extraction_is_usable is True
+
+    def test_claim_extraction_still_needs_a_key_on_the_anthropic_path(self) -> None:
+        settings = AISettings(AI_ENABLED=True, CLAIM_EXTRACT_PROVIDER="anthropic")
+        assert settings.claim_extraction_is_usable is False
+
+    def test_claim_extraction_is_not_usable_while_ai_is_disabled(self) -> None:
+        settings = AISettings(AI_ENABLED=False, CLAIM_EXTRACT_PROVIDER="ollama")
+        assert settings.claim_extraction_is_usable is False
+
 
 class TestAffiliateSettings:
     def test_affiliate_is_off_by_default(self) -> None:

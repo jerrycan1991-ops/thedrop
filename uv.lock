@@ -1622,6 +1622,7 @@ version = "0.1.0"
 source = { editable = "services/agent-runner" }
 dependencies = [
     { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
@@ -1633,6 +1634,7 @@ embeddings = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
+    { name = "pydantic", specifier = ">=2.9" },
     { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=3.0" },
     { name = "torch", marker = "extra == 'embeddings'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cu126" },
 ]

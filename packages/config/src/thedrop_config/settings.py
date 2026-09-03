@@ -165,10 +165,40 @@ class AISettings(BaseSettings):
         default=BudgetAction.HALT, alias="BUDGET_ACTION_ON_BREACH"
     )
 
+    #: PIPELINE.md 10 specifies Claude Haiku. "ollama" is a deliberate deviation while
+    #: local-model quality on this task is still being measured -- see ADR-0020. Kept
+    #: switchable, not hardcoded, because that measurement may conclude either way.
+    claim_extract_provider: str = Field(default="ollama", alias="CLAIM_EXTRACT_PROVIDER")
+    #: 12GB-VRAM-sized. The 14B tier of the same family left under 500MB of headroom on
+    #: a single moderate-length story and would very likely spill to CPU on a real,
+    #: multi-article evidence packet -- see ADR-0020's benchmark.
+    claim_extract_ollama_model: str = Field(
+        default="qwen2.5:7b", alias="CLAIM_EXTRACT_OLLAMA_MODEL"
+    )
+    claim_extract_anthropic_model: str = Field(
+        default="claude-haiku-4-5-20251001", alias="CLAIM_EXTRACT_ANTHROPIC_MODEL"
+    )
+    #: Stories dispatched per beat tick. One model call per story (its whole evidence
+    #: packet at once, not per article) -- see entity_max_batches_per_tick for why a
+    #: cap exists at all: bounding a cold-start backlog.
+    claim_extract_max_stories_per_tick: int = Field(
+        default=20, ge=1, le=200, alias="CLAIM_EXTRACT_MAX_STORIES_PER_TICK"
+    )
+
     @property
     def is_usable(self) -> bool:
         """AI work may only be scheduled when enabled AND credentialed."""
         return self.enabled and bool(self.anthropic_api_key)
+
+    @property
+    def claim_extraction_is_usable(self) -> bool:
+        """Claim extraction has its own gate: the ollama path needs no Anthropic key,
+        so it must not be blocked by ``is_usable``'s anthropic-only check."""
+        if not self.enabled:
+            return False
+        if self.claim_extract_provider == "ollama":
+            return True
+        return bool(self.anthropic_api_key)
 
 
 class AffiliateSettings(BaseSettings):

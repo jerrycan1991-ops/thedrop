@@ -12,6 +12,12 @@ requires-python = ">=3.12,<3.14"
 # database dependency here would put a credential on the least-trusted machine we own.
 dependencies = [
     "httpx>=0.28",
+    # Response-schema validation for claim extraction (PIPELINE.md 10, SECURITY.md 6.3:
+    # "schema validation ... invalid output is retried once, then fails"). Plain
+    # pydantic, not pydantic-settings -- config.py's own docstring explains why this
+    # runner avoids settings-management magic; validating a model's JSON output is a
+    # different job from loading config, and needs no config-loading behavior at all.
+    "pydantic>=2.9",
 ]
 
 # An EXTRA, not a dependency. sentence-transformers pulls torch -- several gigabytes,
