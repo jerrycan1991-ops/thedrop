@@ -12,6 +12,7 @@ that loses power mid-job costs us one lease interval, not a stuck pipeline.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,9 +20,9 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from thedrop_database.enums import JobStatus, WorkerStatus
-from thedrop_database.models import Job
+from thedrop_database.models import Job, RawArticle
 
-from app.deps import SessionDep, WorkerDep
+from app.deps import SessionDep, SettingsDep, WorkerDep
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/worker", tags=["worker"])
@@ -45,6 +46,31 @@ class ClaimRequest(BaseModel):
     handlers: list[str] = Field(min_length=1, max_length=32)
     max_jobs: int = Field(default=1, ge=1, le=4)
     lease_seconds: int = Field(default=_DEFAULT_LEASE_SECONDS, ge=60, le=7200)
+
+
+#: How far a unit vector may drift before it is rejected. bge-small-en-v1.5 returns
+#: normalized vectors; anything meaningfully off the unit sphere came from a different
+#: model or a different pooling strategy, whatever it calls itself. Loose enough to
+#: absorb float32 round-tripping through JSON.
+_NORM_TOLERANCE = 0.05
+
+
+class EmbeddingItem(BaseModel):
+    id: str = Field(max_length=64)
+    vector: list[float]
+
+
+class EmbeddingsRequest(BaseModel):
+    """Vectors computed on the desktop, on their way into raw_articles.
+
+    `model` is not decoration. ADR-0005 keeps ONE vector space, and mixing models or
+    dimensions corrupts similarity search in a way that is very hard to notice later --
+    nothing errors, results just quietly get worse. So the model is declared, checked
+    against config, and the batch is refused if it disagrees.
+    """
+
+    model: str = Field(max_length=128)
+    items: list[EmbeddingItem] = Field(min_length=1, max_length=128)
 
 
 class CompleteRequest(BaseModel):
@@ -176,9 +202,7 @@ def complete_job(
 
 
 @router.post("/jobs/{job_id}/fail")
-def fail_job(
-    job_id: str, payload: FailRequest, node: WorkerDep, db: SessionDep
-) -> dict[str, Any]:
+def fail_job(job_id: str, payload: FailRequest, node: WorkerDep, db: SessionDep) -> dict[str, Any]:
     job = _load_leased_job(db, node.id, job_id)
 
     retry = payload.retryable and job.attempts < job.max_attempts
@@ -202,6 +226,75 @@ def fail_job(
         "job failed", extra={"job_type": job.job_type, "retry": retry, "attempts": job.attempts}
     )
     return {"status": "queued" if retry else "failed", "attempts": job.attempts}
+
+
+@router.post("/embeddings")
+def store_embeddings(
+    payload: EmbeddingsRequest, node: WorkerDep, db: SessionDep, settings: SettingsDep
+) -> dict[str, Any]:
+    """Write desktop-computed vectors into raw_articles.
+
+    A separate endpoint rather than a field on `/jobs/{id}/complete`, for two reasons:
+    `jobs.result` is kept forever, so vectors posted through it would duplicate every
+    embedding into the jobs table permanently; and the lease protocol stays generic
+    instead of growing a dispatch table keyed on job type.
+
+    Posting is therefore separate from completing, and deliberately ordered: the runner
+    stores vectors first, then completes. If it dies in between, the lease expires, the
+    job is requeued, and the same vectors are written again -- identical values, so the
+    retry is a no-op rather than a correction.
+
+    The worker token is the trust boundary, as it already is for claiming and
+    completing. What this adds is that a *wrong* vector is refused even from a
+    legitimate worker.
+    """
+    if payload.model != settings.embedding_model:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"embedding model mismatch: this deployment stores "
+            f"{settings.embedding_model!r}, worker sent {payload.model!r}",
+        )
+
+    expected_dimensions = settings.embedding_dimensions
+    for item in payload.items:
+        if len(item.vector) != expected_dimensions:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{item.id}: expected {expected_dimensions} dimensions, got {len(item.vector)}",
+            )
+        norm = math.sqrt(sum(value * value for value in item.vector))
+        if abs(norm - 1.0) > _NORM_TOLERANCE:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{item.id}: vector is not normalized (norm {norm:.4f})",
+            )
+
+    # Nothing is written until every item has passed. A partially applied batch would
+    # leave the caller unable to say what happened without re-reading each row.
+    now = datetime.now(UTC)
+    stored: list[str] = []
+    unknown: list[str] = []
+    for item in payload.items:
+        updated = db.execute(
+            update(RawArticle)
+            .where(RawArticle.public_id == item.id)
+            .values(embedding=item.vector, embedded_at=now)
+            .returning(RawArticle.id)
+        ).scalar()
+        (stored if updated is not None else unknown).append(item.id)
+    db.commit()
+
+    if unknown:
+        # Not an error: a row can legitimately vanish between dispatch and completion.
+        # Reported so a runner that is systematically wrong is visible rather than
+        # silently writing nothing.
+        logger.warning(
+            "embeddings for unknown articles",
+            extra={"worker": node.name, "count": len(unknown)},
+        )
+
+    logger.info("embeddings stored", extra={"worker": node.name, "count": len(stored)})
+    return {"stored": len(stored), "unknown": unknown}
 
 
 @router.get("/status")

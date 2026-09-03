@@ -20,6 +20,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from agent import embedding
+
 logger = logging.getLogger(__name__)
 
 Handler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -74,3 +76,54 @@ def noop(payload: dict[str, Any]) -> dict[str, Any]:
         time.sleep(min(sleep_seconds, 60))
     logger.info("noop handler ran", extra={"slept": sleep_seconds})
     return {"ok": True, "echo": payload, "sleptSeconds": sleep_seconds}
+
+
+@register("embed_articles")
+def embed_articles(payload: dict[str, Any]) -> dict[str, Any]:
+    """Embed a batch of articles on the GPU (ADR-0005).
+
+    Returns the vectors in `embeddings`; the RUNNER posts them and strips them before
+    completing, so they never reach `jobs.result`. Keeping that here would mean giving
+    every handler a client and knowledge of the protocol, which is the runner's job.
+
+    Order is preserved between input items and output vectors, and the article id is
+    carried through explicitly rather than by position -- a silent reordering would
+    attach every article to the wrong vector, and nothing downstream could detect it.
+    """
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise NonRetryableError("embed_articles payload has no items")
+
+    texts: list[str] = []
+    ids: list[str] = []
+    for item in items:
+        article_id = (item or {}).get("id")
+        text = (item or {}).get("text")
+        if not article_id or not text:
+            raise NonRetryableError(f"embed_articles item is missing id or text: {item!r}")
+        ids.append(str(article_id))
+        texts.append(str(text))
+
+    vectors = embedding.encode(texts)
+    if len(vectors) != len(ids):
+        # Cannot happen with a sane encoder, and would silently mis-assign every vector
+        # if it did. Non-retryable: the same input would produce the same mismatch.
+        raise NonRetryableError(f"encoder returned {len(vectors)} vectors for {len(ids)} texts")
+
+    logger.info("embedded batch", extra={"count": len(ids)})
+    return {
+        "model": embedding.model_name(),
+        "embeddings": [{"id": i, "vector": v} for i, v in zip(ids, vectors, strict=True)],
+    }
+
+
+if not embedding.is_available():
+    # Unregister rather than fail at claim time. The runner advertises only what it can
+    # dispatch, so a desktop without torch never receives embedding work and the
+    # batches simply wait -- which is what ADR-0005 already promises when the desktop is
+    # offline. Warned, because a broken install would otherwise look like idleness.
+    del _REGISTRY["embed_articles"]
+    logger.warning(
+        "sentence-transformers is not installed; not advertising 'embed_articles'. "
+        "Install the desktop group: uv sync --group desktop"
+    )

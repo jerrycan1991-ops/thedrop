@@ -25,6 +25,16 @@ class AuthRejectedError(RuntimeError):
     """The token was refused. Retrying will not help; a human must fix it."""
 
 
+class PayloadRejectedError(RuntimeError):
+    """The VPS refused the CONTENT of a request (400). Retrying cannot help.
+
+    Distinct from ApiUnavailableError because the generic `_post` treats every 4xx as
+    "try again later". For a rejected embedding batch that would be wrong in the worst
+    way: a model or dimension mismatch would be retried forever, looking exactly like a
+    network problem while never succeeding and never surfacing the real message.
+    """
+
+
 @dataclass(frozen=True)
 class Job:
     id: str
@@ -136,6 +146,33 @@ class WorkerClient:
         if data["_status"] in (404, 409):
             return "lost_lease"
         return str(data.get("status", "unknown"))
+
+    def store_embeddings(self, model: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Post vectors, before completing the job that produced them.
+
+        Not part of `complete`: `jobs.result` is kept forever, so vectors sent that way
+        would duplicate every embedding into the jobs table permanently.
+
+        Ordering is deliberate. If this succeeds and the process dies before the job is
+        completed, the lease expires, the job is requeued and the same vectors are
+        written again -- identical values, so a retry costs GPU time and changes
+        nothing. The reverse order could complete a job whose vectors were never
+        stored, and nothing would ever look at that article again.
+        """
+        try:
+            response = self._client.post(
+                "/api/v1/worker/embeddings", json={"model": model, "items": items}
+            )
+        except httpx.HTTPError as exc:
+            raise ApiUnavailableError(str(exc)) from exc
+
+        if response.status_code == 401:
+            raise AuthRejectedError("worker token rejected")
+        if response.status_code == 400:
+            raise PayloadRejectedError(response.text[:400])
+        if response.status_code != 200:
+            raise ApiUnavailableError(f"{response.status_code} from /embeddings")
+        return dict(response.json())
 
     def status(self) -> dict[str, Any]:
         try:

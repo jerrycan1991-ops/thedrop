@@ -14,6 +14,22 @@ dependencies = [
     "httpx>=0.28",
 ]
 
+# An EXTRA, not a dependency. sentence-transformers pulls torch -- several gigabytes,
+# and a CUDA build on this machine. A runner that only claims `noop` should not have to
+# download it, and CI should not either.
+#
+# Absence is handled, not an error: `agent.embedding.is_available()` probes for it and
+# the `embed_articles` handler unregisters itself when it is missing, so the runner
+# advertises only what it can actually do and the API never leases embedding work to a
+# desktop that cannot perform it (ADR-0005).
+#
+# For GPU wheels rather than the CPU default, install torch first from the CUDA index:
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+[project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=3.0",
+]
+
 [tool.uv.sources]
 
 [build-system]

@@ -138,6 +138,43 @@ owns that worker name and nothing else — a second runner serving a *different*
 holder without stopping it. `install-task.ps1` calls `Stop-Runner` itself, both before
 re-registering and on `-Uninstall`.
 
+## Embeddings (Phase 3, ADR-0005)
+
+The VPS computes no embeddings. It queues `embed_articles` jobs whose payload carries
+the article text; this runner encodes them on the GPU with `bge-small-en-v1.5` (384
+dimensions, normalized) and posts the vectors to `POST /api/v1/worker/embeddings`.
+
+Install the model stack — several GB, and separate from `desktop` so a runner that only
+claims `noop` never downloads it:
+
+```bash
+uv sync --group desktop-ml
+```
+
+For CUDA wheels rather than the CPU default, install torch first:
+
+```bash
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
+
+Three things worth knowing:
+
+- **Without the stack, `embed_articles` is not advertised.** The handler unregisters
+  itself, so the API never leases embedding work to a desktop that cannot do it and the
+  batches simply wait. A warning is logged, because a broken install would otherwise
+  look identical to an idle queue.
+- **Vectors do not travel through `complete`.** `jobs.result` is kept forever, so they
+  would be a second permanent copy of every embedding. The runner posts them, strips
+  them, and completes with a summary.
+- **Deliver, then complete.** If the process dies in between, the lease expires and the
+  batch is re-embedded to identical values. The reverse order could mark a job done
+  whose vectors were never stored, and nothing would revisit those articles.
+
+A batch the server refuses — wrong model, wrong dimensions, a vector off the unit
+sphere — fails permanently rather than retrying. Recomputing produces the same rejected
+vectors, and ADR-0005's single vector space is exactly the invariant that must not
+degrade quietly.
+
 ## Adding a handler
 
 The registry is the single source of truth: whatever is registered is what gets

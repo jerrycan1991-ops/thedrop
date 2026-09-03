@@ -23,7 +23,7 @@ celery_app = Celery(
     "thedrop",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.maintain", "app.tasks.ingest", "app.tasks.publish"],
+    include=["app.tasks.maintain", "app.tasks.ingest", "app.tasks.embed", "app.tasks.publish"],
 )
 
 celery_app.conf.update(
@@ -68,6 +68,13 @@ celery_app.conf.beat_schedule = {
     "mark-stale-workers-offline": {
         "task": "app.tasks.maintain.mark_stale_workers_offline",
         "schedule": 60.0,
+    },
+    # Embeddings are the desktop's work (ADR-0005); this only queues it. Slower than
+    # ingestion's tick because nothing downstream is more urgent than the next poll,
+    # and a shorter interval would just re-scan the same backlog.
+    "dispatch-embedding-batches": {
+        "task": "app.tasks.embed.dispatch_embedding_batches",
+        "schedule": 120.0,
     },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",

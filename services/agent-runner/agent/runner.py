@@ -27,7 +27,13 @@ from types import FrameType
 from typing import Any
 
 from agent import __version__
-from agent.client import ApiUnavailableError, AuthRejectedError, Job, WorkerClient
+from agent.client import (
+    ApiUnavailableError,
+    AuthRejectedError,
+    Job,
+    PayloadRejectedError,
+    WorkerClient,
+)
 from agent.config import RunnerConfig
 from agent.handlers import NonRetryableError, dispatch, registered_types
 
@@ -146,9 +152,57 @@ class Runner:
             logger.exception("job %s raised", job.id)
             self._report_fail(job, f"{type(exc).__name__}: {exc}", retryable=True)
         else:
-            self._report_complete(job, result)
+            deliverable = self._deliver_embeddings(job, result)
+            if deliverable is not None:
+                self._report_complete(job, deliverable)
         finally:
             self._active_jobs -= 1
+
+    def _deliver_embeddings(self, job: Job, result: dict[str, Any]) -> dict[str, Any] | None:
+        """Post any vectors the handler produced, and strip them from the result.
+
+        Returns the result to complete with, or None when the job must NOT be completed.
+
+        Vectors travel through their own endpoint rather than through `complete`,
+        because `jobs.result` is kept forever and would otherwise hold a second copy of
+        every embedding. Stripping them here is what keeps that true -- a handler
+        returning them is the only way they could leak into the job row.
+
+        Deliver-then-complete, never the reverse: if delivery succeeds and this process
+        dies before completing, the lease expires and the batch is re-embedded to
+        identical values. Completing first could mark a job done whose vectors were
+        never stored, and nothing would ever revisit those articles.
+        """
+        vectors = result.get("embeddings")
+        if not vectors:
+            return result
+
+        try:
+            outcome = self.client.store_embeddings(str(result.get("model") or ""), vectors)
+        except PayloadRejectedError as exc:
+            # A dimension or model mismatch. Retrying recomputes the same rejected
+            # vectors, so this fails permanently and loudly -- ADR-0005's one vector
+            # space is exactly the kind of invariant that must not degrade quietly.
+            logger.error("embeddings refused for job %s: %s", job.id, exc)
+            self._report_fail(job, f"embeddings refused: {exc}", retryable=False)
+            return None
+        except AuthRejectedError as exc:
+            # Same fatal condition as everywhere else: retrying a dead credential looks
+            # identical to being offline while never recovering.
+            logger.error("%s", exc)
+            self._fatal_exit = 2
+            self.stop_event.set()
+            return None
+        except ApiUnavailableError as exc:
+            # The work is done but undeliverable. Leave the job leased: it expires, the
+            # reaper requeues it, and the batch is simply embedded again.
+            logger.warning("could not store embeddings for %s (lease will expire): %s", job.id, exc)
+            return None
+
+        summary = {key: value for key, value in result.items() if key != "embeddings"}
+        summary["stored"] = outcome.get("stored", 0)
+        summary["unknown"] = outcome.get("unknown", [])
+        return summary
 
     def _report_complete(self, job: Job, result: dict[str, Any]) -> None:
         try:

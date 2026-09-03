@@ -42,6 +42,13 @@ thedrop-agent-runner = { workspace = true }
 # `uv sync --group desktop`, or let `uv run --group desktop` do it on demand.
 desktop = ["thedrop-agent-runner"]
 
+# The same runner WITH the embedding model stack (torch, several GB). Separate from
+# `desktop` so that installing the runner does not silently pull a multi-gigabyte CUDA
+# download onto a machine that only needs to claim jobs -- and so CI never does.
+# The desktop that actually embeds uses this one:
+#   uv sync --group desktop-ml
+desktop-ml = ["thedrop-agent-runner[embeddings]"]
+
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

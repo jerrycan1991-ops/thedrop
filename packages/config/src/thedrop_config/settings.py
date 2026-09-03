@@ -111,6 +111,14 @@ class AISettings(BaseSettings):
     ollama_base_url: str = Field(default="http://127.0.0.1:11434", alias="OLLAMA_BASE_URL")
     embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", alias="EMBEDDING_MODEL")
     embedding_dimensions: int = Field(default=384, alias="EMBEDDING_DIMENSIONS")
+    #: Articles per embedding job. Bounded by what fits in one GPU forward pass and by
+    #: the job payload it has to travel in, not by how many are waiting.
+    embedding_batch_size: int = Field(default=32, ge=1, le=128, alias="EMBEDDING_BATCH_SIZE")
+    #: Batches queued per beat tick. Bounds a cold start: a large backlog queued all at
+    #: once would sit in front of everything else, for a desktop that may be offline.
+    embedding_max_batches_per_tick: int = Field(
+        default=8, ge=1, le=64, alias="EMBEDDING_MAX_BATCHES_PER_TICK"
+    )
 
     daily_budget_usd: float = Field(default=0.0, ge=0, alias="DAILY_AI_BUDGET_USD")
     monthly_budget_usd: float = Field(default=0.0, ge=0, alias="MONTHLY_AI_BUDGET_USD")
