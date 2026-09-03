@@ -140,6 +140,12 @@ def main() -> int:
         print(f"  articles in them   {shape.clustered_articles}")
         print(f"  largest story      {shape.largest}")
         print(f"  single-article     {shape.singletons}")
+        merged = conn.execute(
+            text("select count(*) from stories where merged_into_id is not null")
+        ).scalar()
+        # Merges are invisible otherwise: the story count simply goes down, which reads
+        # as stories never having existed rather than as consolidation working.
+        print(f"  merged away        {merged}")
         print("\ntop entities")
         rows = conn.execute(text(_TOP_ENTITIES)).all()
         if not rows:

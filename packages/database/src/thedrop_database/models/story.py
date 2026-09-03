@@ -106,6 +106,13 @@ class Story(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     #: evidence it was written from.
     evidence_packet_hash: Mapped[bytes | None] = mapped_column(LargeBinary(32))
 
+    #: Set when this story was merged INTO another. The row is kept rather than
+    #: deleted: PIPELINE.md requires merges to be recorded so a story's identity is
+    #: auditable, and a deleted row cannot explain where its articles went.
+    merged_into_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("stories.id", ondelete="SET NULL"), index=True
+    )
+
     rejected_reason: Mapped[str | None] = mapped_column(Text)
     defer_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 

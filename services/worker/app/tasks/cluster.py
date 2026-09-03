@@ -15,7 +15,11 @@ import logging
 
 from thedrop_config import get_settings
 from thedrop_database import session_scope
-from thedrop_database.clustering import cluster_pending, pending_clustering_count
+from thedrop_database.clustering import (
+    cluster_pending,
+    consolidate_stories,
+    pending_clustering_count,
+)
 
 from app.celery_app import celery_app
 from app.locks import dispatch_lock
@@ -63,3 +67,35 @@ def cluster_ready_articles() -> dict[str, object]:
         "new_stories": len(decisions) - joined,
         "pending": pending,
     }
+
+
+@celery_app.task(name="app.tasks.cluster.consolidate_recent_stories")
+def consolidate_recent_stories() -> dict[str, object]:
+    """Merge stories that are the same event.
+
+    The counterweight to a design that deliberately over-splits: join-or-create refuses
+    whenever it is unsure and the digest rule refuses again, and nothing else puts the
+    duplicates back together.
+
+    Runs less often than clustering. A merge is a bigger claim than a join, and there is
+    nothing to consolidate until clustering has produced duplicates to consolidate.
+    """
+    settings = get_settings()
+
+    with dispatch_lock("consolidation") as acquired:
+        if not acquired:
+            return {"merges": 0, "status": "already_consolidating"}
+
+        with session_scope() as db:
+            merges = consolidate_stories(
+                db,
+                window_hours=settings.ai.cluster_window_hours,
+                merge_threshold=settings.ai.cluster_merge_threshold,
+                max_merges=settings.ai.cluster_max_merges_per_pass,
+                max_fraction=settings.ai.entity_guard_max_doc_fraction,
+                min_floor=settings.ai.entity_guard_min_doc_floor,
+            )
+
+    if merges:
+        logger.info("consolidated", extra={"merges": len(merges)})
+    return {"merges": len(merges)}

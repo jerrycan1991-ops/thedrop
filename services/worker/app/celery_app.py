@@ -104,6 +104,12 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.cluster.cluster_ready_articles",
         "schedule": 90.0,
     },
+    # Less often than clustering: a merge is a bigger claim than a join, and there is
+    # nothing to consolidate until clustering has produced duplicates.
+    "consolidate-recent-stories": {
+        "task": "app.tasks.cluster.consolidate_recent_stories",
+        "schedule": 600.0,
+    },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",
         "schedule": crontab(hour=0, minute=5),

@@ -99,7 +99,8 @@ Incremental, online:
    other** is a digest — a roundup covering several unrelated events — and joins
    neither. It is not a second source for any of them.
 4. Else create a new `story`.
-5. Periodic consolidation pass (HDBSCAN over the last 24 h) merges clusters that drifted apart, and splits clusters whose intra-similarity collapsed.
+5. Periodic consolidation merges stories that are the same event: centroid similarity at or above `CLUSTER_MERGE_THRESHOLD` (higher than the join threshold) **and** a shared discriminative entity — the same guard, so consolidation cannot become a way around it. The older story survives and the absorbed row is kept with `merged_into_id` set, so the merge stays auditable. This is pairwise and runs on the VPS.
+6. Splitting a cluster whose intra-similarity collapsed is a re-partitioning problem, needs HDBSCAN, and is therefore a desktop job (ADR-0015). Not yet built.
 
 Entity overlap is required because embeddings alone happily merge "shooting in Ohio" with "shooting in Nevada". That is a correctness guard, not an optimization.
 

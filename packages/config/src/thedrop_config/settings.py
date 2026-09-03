@@ -148,6 +148,16 @@ class AISettings(BaseSettings):
     cluster_candidate_limit: int = Field(default=10, ge=1, le=100, alias="CLUSTER_CANDIDATE_LIMIT")
     #: Articles clustered per tick. Bounds a cold start on a large backlog.
     cluster_max_per_tick: int = Field(default=200, ge=1, le=5000, alias="CLUSTER_MAX_PER_TICK")
+    #: Higher than the join threshold on purpose. Adding an article risks one wrong
+    #: member; merging two stories asserts everything already in both is one event.
+    cluster_merge_threshold: float = Field(
+        default=0.90, gt=0, le=1, alias="CLUSTER_MERGE_THRESHOLD"
+    )
+    #: Merges per pass. A cap so a threshold set too low is a bounded mistake that shows
+    #: up in a log rather than a cascade that flattens a day of stories.
+    cluster_max_merges_per_pass: int = Field(
+        default=50, ge=1, le=1000, alias="CLUSTER_MAX_MERGES_PER_PASS"
+    )
 
     daily_budget_usd: float = Field(default=0.0, ge=0, alias="DAILY_AI_BUDGET_USD")
     monthly_budget_usd: float = Field(default=0.0, ge=0, alias="MONTHLY_AI_BUDGET_USD")

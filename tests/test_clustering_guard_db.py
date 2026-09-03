@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from thedrop_database import engine
 from thedrop_database.clustering import (
     cluster_article,
+    consolidate_stories,
     guard_entity_ids,
     overexposed_entity_ids,
     overexposure_threshold,
@@ -529,3 +530,103 @@ def test_matching_two_stories_about_the_same_event_still_joins(
 
     assert decision.joined, f"refused a legitimate join: {decision.reason}"
     assert decision.story_id in (a.story_id, b.story_id)
+
+
+# -------------------------------------------------------------- consolidation
+
+
+def test_two_stories_about_one_event_are_merged(db: Session, provider: Provider) -> None:
+    """The counterweight to a design that leans towards over-splitting.
+
+    Join-or-create refuses whenever it is unsure and the digest rule refuses again;
+    both produce duplicate stories for one event. Nothing else puts them back together.
+    """
+    src = named_source(db, "pytest-cons.invalid")
+    place = exact_entity(db, "pytest-leipzig2", "PLACE")
+    a = embedded_article(db, provider, src, 300, vector(31))
+    b = embedded_article(db, provider, src, 301, vector(31, 0.1))
+    link(db, a, place)
+    link(db, b, place)
+
+    first = cluster_article(db, a, join_threshold=0.999)
+    second = cluster_article(db, b, join_threshold=0.999)
+    assert first.story_id != second.story_id, "fixture is wrong: these should be two stories"
+
+    merges = consolidate_stories(db, merge_threshold=0.9)
+
+    pair = [
+        m for m in merges if {m.survivor_id, m.absorbed_id} == {first.story_id, second.story_id}
+    ]
+    assert pair, f"the duplicate stories were not merged: {merges}"
+    assert pair[0].survivor_id == first.story_id, "the older story should survive"
+
+
+def test_a_merge_moves_the_articles_and_records_where_they_went(
+    db: Session, provider: Provider
+) -> None:
+    """A deleted row cannot explain where its articles went. PIPELINE.md requires the
+    merge to stay auditable, so the absorbed story is kept and points at its survivor."""
+    src = named_source(db, "pytest-cons2.invalid")
+    place = exact_entity(db, "pytest-place-cons", "PLACE")
+    a = embedded_article(db, provider, src, 310, vector(37))
+    b = embedded_article(db, provider, src, 311, vector(37, 0.1))
+    link(db, a, place)
+    link(db, b, place)
+    first = cluster_article(db, a, join_threshold=0.999)
+    second = cluster_article(db, b, join_threshold=0.999)
+
+    consolidate_stories(db, merge_threshold=0.9)
+
+    members = db.scalars(
+        select(StorySource.raw_article_id).where(StorySource.story_id == first.story_id)
+    ).all()
+    assert set(members) == {a.id, b.id}
+
+    absorbed = db.get(Story, second.story_id)
+    assert absorbed is not None, "the absorbed story was deleted; the merge is unauditable"
+    assert absorbed.merged_into_id == first.story_id
+
+    db.refresh(b)
+    assert b.story_id == first.story_id
+
+
+def test_consolidation_does_not_bypass_the_entity_guard(db: Session, provider: Provider) -> None:
+    """The important one.
+
+    If a merge needed only similarity, consolidation would be a way around the guard --
+    two stories the guard kept apart at join time would be reunited a minute later, and
+    every US story would eventually collapse into one.
+    """
+    src = named_source(db, "pytest-cons3.invalid")
+    a = embedded_article(db, provider, src, 320, vector(41))
+    b = embedded_article(db, provider, src, 321, vector(41, 0.05))
+    link(db, a, exact_entity(db, "pytest-ohio-c", "PLACE"))
+    link(db, b, exact_entity(db, "pytest-nevada-c", "PLACE"))
+
+    first = cluster_article(db, a, join_threshold=0.999)
+    second = cluster_article(db, b, join_threshold=0.999)
+
+    merges = consolidate_stories(db, merge_threshold=0.5)
+
+    assert not [
+        m for m in merges if {m.survivor_id, m.absorbed_id} == {first.story_id, second.story_id}
+    ], "two different events were merged on similarity alone"
+
+
+def test_a_merged_story_is_not_considered_again(db: Session, provider: Provider) -> None:
+    """An absorbed story keeps its row. If consolidation still saw it as a candidate it
+    would merge an empty shell into something else on every pass."""
+    src = named_source(db, "pytest-cons4.invalid")
+    place = exact_entity(db, "pytest-place-c4", "PLACE")
+    a = embedded_article(db, provider, src, 330, vector(43))
+    b = embedded_article(db, provider, src, 331, vector(43, 0.1))
+    link(db, a, place)
+    link(db, b, place)
+    cluster_article(db, a, join_threshold=0.999)
+    cluster_article(db, b, join_threshold=0.999)
+
+    first_pass = consolidate_stories(db, merge_threshold=0.9)
+    second_pass = consolidate_stories(db, merge_threshold=0.9)
+
+    assert first_pass
+    assert second_pass == [], "consolidation repeated itself on an already-merged story"

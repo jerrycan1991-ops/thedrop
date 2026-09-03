@@ -41,7 +41,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -510,3 +510,188 @@ def cluster_pending(
             extra={"articles": len(decisions), "joined": joined, "new": len(decisions) - joined},
         )
     return decisions
+
+
+# ------------------------------------------------------------------ consolidation
+
+#: Stricter than the join threshold, and deliberately so. Adding one article to a story
+#: risks one wrong member; merging two stories asserts that everything already in both
+#: is one event, so it should need more evidence, not the same.
+DEFAULT_MERGE_THRESHOLD = 0.90
+
+
+def story_guard_entities(
+    db: Session,
+    story_id: int,
+    *,
+    max_fraction: float = DEFAULT_MAX_DOC_FRACTION,
+    min_floor: int = DEFAULT_MIN_DOC_FLOOR,
+) -> set[int]:
+    """A story's entities that are allowed to justify a merge.
+
+    The same two filters the article-side guard applies. Consolidation must not become
+    a way around the guard: if "United States" cannot license a join, it cannot license
+    a merge either, or every US story eventually collapses into one.
+
+    The publisher filter has no analogue here -- a story has no single publisher -- and
+    it is not needed: an entity that is merely one outlet's masthead will not be shared
+    with a story built from other outlets.
+    """
+    excluded = overexposed_entity_ids(db, max_fraction=max_fraction, min_floor=min_floor)
+    rows = db.execute(
+        select(StoryEntity.entity_id)
+        .join(Entity, Entity.id == StoryEntity.entity_id)
+        .where(
+            StoryEntity.story_id == story_id,
+            Entity.entity_type.not_in(GUARD_EXCLUDED_TYPES),
+        )
+    ).scalars()
+    return set(rows) - excluded
+
+
+def merge_stories(db: Session, survivor_id: int, absorbed_id: int) -> None:
+    """Move everything from one story into another and record where it went.
+
+    The absorbed row is KEPT, with `merged_into_id` set. PIPELINE.md requires merges to
+    be auditable, and a deleted row cannot explain where its articles went -- someone
+    looking at an article's history would find a dangling id and no account of it.
+    """
+    db.execute(
+        update(StorySource).where(StorySource.story_id == absorbed_id).values(story_id=survivor_id)
+    )
+    db.execute(
+        update(RawArticle).where(RawArticle.story_id == absorbed_id).values(story_id=survivor_id)
+    )
+
+    # Entities move by insert-if-absent rather than UPDATE: the pair is unique, so an
+    # entity both stories already had would violate the constraint on a blind update.
+    for entity_id, mentions in db.execute(
+        select(StoryEntity.entity_id, StoryEntity.mention_count).where(
+            StoryEntity.story_id == absorbed_id
+        )
+    ).all():
+        db.execute(
+            pg_insert(StoryEntity)
+            .values(story_id=survivor_id, entity_id=entity_id, mention_count=mentions or 0)
+            .on_conflict_do_nothing(constraint="uq_story_entities_pair")
+        )
+    db.execute(delete(StoryEntity).where(StoryEntity.story_id == absorbed_id))
+
+    db.execute(
+        update(Story)
+        .where(Story.id == absorbed_id)
+        .values(merged_into_id=survivor_id, centroid=None)
+    )
+    db.flush()
+
+    # Recompute rather than average the two centroids: the members are known, so the
+    # exact mean is available and an average of averages would weight a two-article
+    # story the same as a twenty-article one.
+    members = (
+        db.execute(
+            select(RawArticle.embedding)
+            .join(StorySource, StorySource.raw_article_id == RawArticle.id)
+            .where(StorySource.story_id == survivor_id, RawArticle.embedding.is_not(None))
+        )
+        .scalars()
+        .all()
+    )
+    if members:
+        vectors = [list(v) for v in members]
+        survivor = db.get(Story, survivor_id)
+        if survivor is not None:
+            survivor.centroid = [sum(col) / len(vectors) for col in zip(*vectors, strict=True)]
+
+    _recount_sources(db, survivor_id)
+    db.execute(
+        update(Story).where(Story.id == survivor_id).values(last_activity_at=datetime.now(UTC))
+    )
+
+
+@dataclass(frozen=True)
+class Merge:
+    survivor_id: int
+    absorbed_id: int
+    similarity: float
+    shared_entities: int
+
+
+def consolidate_stories(
+    db: Session,
+    *,
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+    merge_threshold: float = DEFAULT_MERGE_THRESHOLD,
+    max_merges: int = 50,
+    max_fraction: float = DEFAULT_MAX_DOC_FRACTION,
+    min_floor: int = DEFAULT_MIN_DOC_FLOOR,
+) -> list[Merge]:
+    """Merge stories that are the same event, within the recent window.
+
+    The counterweight to a design that leans towards over-splitting. Join-or-create
+    refuses whenever it is unsure, and the digest rule refuses again; both produce
+    duplicate stories for one event. Nothing else puts them back together.
+
+    Conditions are the join conditions, tightened: centroid similarity at or above
+    `merge_threshold` (higher than the join threshold -- merging asserts that everything
+    already in both stories is one event) AND a shared discriminative entity. The guard
+    applies here for the same reason it applies at join time, and skipping it would make
+    consolidation a way around it.
+
+    The older story survives, so a story keeps the identity it was founded with rather
+    than being renamed by whichever duplicate happened to grow faster.
+
+    Deliberately NOT HDBSCAN, which PIPELINE.md §6 names. Density clustering
+    re-partitions a whole space, which is the right tool for splitting a cluster whose
+    intra-similarity collapsed -- a different problem, needing a model, belonging on the
+    desktop (ADR-0015). Merging known duplicates is pairwise and needs no model, so it
+    runs here where the data is.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    stories = db.execute(
+        select(Story.id, Story.centroid, Story.first_seen_at)
+        .where(
+            Story.centroid.is_not(None),
+            Story.merged_into_id.is_(None),
+            Story.last_activity_at >= cutoff,
+        )
+        .order_by(Story.first_seen_at, Story.id)
+    ).all()
+
+    merges: list[Merge] = []
+    absorbed: set[int] = set()
+
+    for index, (story_id, centroid, _) in enumerate(stories):
+        if story_id in absorbed or len(merges) >= max_merges:
+            continue
+        survivor_entities = story_guard_entities(
+            db, story_id, max_fraction=max_fraction, min_floor=min_floor
+        )
+        if not survivor_entities:
+            continue
+
+        for other_id, other_centroid, _ in stories[index + 1 :]:
+            if other_id in absorbed or len(merges) >= max_merges:
+                continue
+            similarity = _cosine(list(centroid), list(other_centroid))
+            if similarity < merge_threshold:
+                continue
+            shared = survivor_entities & story_guard_entities(
+                db, other_id, max_fraction=max_fraction, min_floor=min_floor
+            )
+            if not shared:
+                continue
+
+            merge_stories(db, story_id, other_id)
+            absorbed.add(other_id)
+            merges.append(
+                Merge(
+                    survivor_id=story_id,
+                    absorbed_id=other_id,
+                    similarity=round(similarity, 4),
+                    shared_entities=len(shared),
+                )
+            )
+
+    if merges:
+        logger.info("consolidated stories", extra={"merges": len(merges)})
+    return merges
