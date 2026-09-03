@@ -20,6 +20,7 @@ from thedrop_database.entity_queue import (
 )
 
 from app.celery_app import celery_app
+from app.locks import dispatch_lock
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,19 @@ def dispatch_extraction_batches() -> dict[str, object]:
     """Queue entity-extraction jobs for articles that have never been through it."""
     settings = get_settings()
 
-    with session_scope() as db:
-        pending = pending_extraction_count(db)
-        queued = enqueue_extraction_batches(
-            db,
-            batch_size=settings.ai.entity_batch_size,
-            max_batches=settings.ai.entity_max_batches_per_tick,
-        )
+    with dispatch_lock("entities") as acquired:
+        if not acquired:
+            # A previous tick is still dispatching. Skipping is correct: the next tick
+            # sees whatever it queued and carries on from there.
+            return {"queued": 0, "pending": None, "status": "already_dispatching"}
+
+        with session_scope() as db:
+            pending = pending_extraction_count(db)
+            queued = enqueue_extraction_batches(
+                db,
+                batch_size=settings.ai.entity_batch_size,
+                max_batches=settings.ai.entity_max_batches_per_tick,
+            )
 
     if queued:
         logger.info("queued extraction batches", extra={"batches": len(queued), "pending": pending})

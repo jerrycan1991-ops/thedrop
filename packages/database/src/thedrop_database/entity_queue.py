@@ -16,7 +16,6 @@ which an instruction can act.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import Any
 
@@ -24,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from thedrop_database.dispatch import new_batch_key, outstanding_article_ids
 from thedrop_database.models import Job, RawArticle
 
 logger = logging.getLogger(__name__)
@@ -50,12 +50,6 @@ def pending_extraction_count(db: Session) -> int:
     )
 
 
-def _batch_key(public_ids: list[str]) -> str:
-    """Deterministic, so a re-dispatched backlog collapses onto the existing rows."""
-    digest = hashlib.sha256("|".join(public_ids).encode("utf-8")).hexdigest()[:16]
-    return f"entities-v1-{digest}"
-
-
 def enqueue_extraction_batches(
     db: Session,
     *,
@@ -75,6 +69,12 @@ def enqueue_extraction_batches(
         .limit(batch_size * max_batches)
     ).all()
 
+    # Articles already inside a queued or leased job. Excluded here rather than
+    # deduplicated by a content-hashed key, which is what made backfills impossible:
+    # a completed job's key blocked its articles from ever being queued again.
+    outstanding = outstanding_article_ids(db, JOB_TYPE)
+    rows = [r for r in rows if str(r.public_id) not in outstanding]
+
     queued: list[str] = []
     for start in range(0, len(rows), batch_size):
         chunk = rows[start : start + batch_size]
@@ -91,7 +91,7 @@ def enqueue_extraction_batches(
         if not items:
             continue
 
-        key = _batch_key([item["id"] for item in items])
+        key = new_batch_key("entities-v1")
         result = db.execute(
             pg_insert(Job)
             .values(

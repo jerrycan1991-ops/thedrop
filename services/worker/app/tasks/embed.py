@@ -21,6 +21,7 @@ from thedrop_database.embedding_queue import (
 )
 
 from app.celery_app import celery_app
+from app.locks import dispatch_lock
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +30,25 @@ logger = logging.getLogger(__name__)
 def dispatch_embedding_batches() -> dict[str, object]:
     """Queue embedding jobs for articles that have none.
 
-    Idempotent by construction: the job key is derived from the batch's article ids, so
-    a tick that would re-queue an unchanged backlog collapses onto the existing rows
-    rather than duplicating them.
+    Articles already inside a queued or leased job are excluded by the queue itself, so
+    a tick arriving while the previous batch is still in flight adds nothing rather than
+    duplicating it.
     """
     settings = get_settings()
 
-    with session_scope() as db:
-        pending = pending_embedding_count(db)
-        queued = enqueue_embedding_batches(
-            db,
-            batch_size=settings.ai.embedding_batch_size,
-            max_batches=settings.ai.embedding_max_batches_per_tick,
-        )
+    with dispatch_lock("embeddings") as acquired:
+        if not acquired:
+            # A previous tick is still dispatching. Skipping is correct: the next tick
+            # sees whatever it queued and carries on from there.
+            return {"queued": 0, "pending": None, "status": "already_dispatching"}
+
+        with session_scope() as db:
+            pending = pending_embedding_count(db)
+            queued = enqueue_embedding_batches(
+                db,
+                batch_size=settings.ai.embedding_batch_size,
+                max_batches=settings.ai.embedding_max_batches_per_tick,
+            )
 
     if queued:
         logger.info("queued embedding batches", extra={"batches": len(queued), "pending": pending})

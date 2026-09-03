@@ -204,10 +204,13 @@ def test_re_dispatching_an_unchanged_backlog_queues_nothing_new(
 ) -> None:
     """The property that makes a 120-second beat safe.
 
-    The job key is derived from the batch's article ids, and `jobs.idempotency_key` is
-    unique — so a second tick over the same backlog hits ON CONFLICT DO NOTHING instead
-    of queueing the same work twice. Without this, every tick would pile up another
-    copy of the whole backlog.
+    Articles already inside a queued or leased job are excluded, so a second tick over
+    the same backlog adds nothing. Without it every tick would pile up another copy.
+
+    Deliberately NOT a content-hashed idempotency key, which is how this was first
+    built: that also blocked articles whose jobs had FINISHED, so clearing a marker to
+    request a backfill queued nothing, forever, with no error. See
+    tests/test_entity_extraction_db.py.
     """
     for n in range(200, 204):
         add_article(db, provider, source, n=n)

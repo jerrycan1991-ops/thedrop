@@ -22,9 +22,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from app.routers.worker import ArticleEntities, EntitiesRequest, ExtractedEntity, store_entities
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from thedrop_database import engine
+from thedrop_database.enums import JobStatus
 from thedrop_database.entity_queue import (
     JOB_TYPE,
     MAX_TEXT_CHARS,
@@ -161,7 +162,15 @@ def test_the_payload_is_bounded(db: Session, provider: Provider, source: Source)
     assert len(texts[str(article.public_id)]) == MAX_TEXT_CHARS
 
 
-def test_re_dispatch_queues_nothing_new(db: Session, provider: Provider, source: Source) -> None:
+def test_a_tick_while_work_is_outstanding_queues_nothing_new(
+    db: Session, provider: Provider, source: Source
+) -> None:
+    """A tick arriving while the previous batch is still queued must not duplicate it.
+
+    The guarantee comes from excluding articles that already have a queued or leased
+    job -- NOT from a content-hashed idempotency key, which is how this was first built
+    and which made backfills impossible (see the test below).
+    """
     for n in range(20, 24):
         add_article(db, provider, source, n=n)
 
@@ -170,6 +179,38 @@ def test_re_dispatch_queues_nothing_new(db: Session, provider: Provider, source:
 
     assert first, "the first dispatch queued nothing, so this proves nothing"
     assert second == []
+
+
+def test_clearing_the_marker_re_queues_finished_work(
+    db: Session, provider: Provider, source: Source
+) -> None:
+    """The regression. A backfill was impossible and the failure was silent.
+
+    `idempotency_key` was derived from the batch's article ids, so re-dispatching the
+    same articles collided with the COMPLETED job rows and `ON CONFLICT DO NOTHING`
+    queued nothing. Clearing `entities_extracted_at` to request re-extraction reported
+    `queued: 0` forever, with no error anywhere. That column exists to make completion
+    safe, not to decide what may be dispatched.
+    """
+    for n in range(70, 74):
+        add_article(db, provider, source, n=n)
+
+    first = enqueue_extraction_batches(db, batch_size=4, max_batches=1)
+    assert first
+
+    # Finish that work, exactly as the desktop would.
+    db.execute(update(Job).where(Job.job_type == JOB_TYPE).values(status=JobStatus.DONE))
+    db.execute(update(RawArticle).values(entities_extracted_at=datetime.now(UTC)))
+    db.flush()
+    assert enqueue_extraction_batches(db, batch_size=4, max_batches=1) == []
+
+    # Now the operator clears the marker to force a re-extraction.
+    db.execute(update(RawArticle).values(entities_extracted_at=None))
+    db.flush()
+
+    assert enqueue_extraction_batches(db, batch_size=4, max_batches=1), (
+        "clearing the marker did not re-queue; backfills are impossible again"
+    )
 
 
 # ---------------------------------------------------------------------- storing

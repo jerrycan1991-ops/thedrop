@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_LOCK_TTL_SECONDS = 600
 
 _KEY_PREFIX = "thedrop:lock:provider:"
+_DISPATCH_PREFIX = "thedrop:lock:dispatch:"
 
 
 def _client() -> redis.Redis:
@@ -45,9 +46,56 @@ def _owner_token() -> str:
 
 
 @contextmanager
-def provider_lock(
-    slug: str, ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS
-) -> Iterator[bool]:
+def dispatch_lock(name: str, ttl_seconds: int = 300) -> Iterator[bool]:
+    """Hold a named dispatch lock if it is free. Yields whether it was acquired.
+
+    The desktop queues decide what to enqueue by asking which articles already have an
+    unfinished job. Two overlapping ticks would both read "none outstanding" before
+    either had committed, and both would queue the same batch. One dispatcher at a time
+    removes the race without putting Redis into the database package.
+
+    Shorter TTL than a provider poll: dispatch is a couple of queries, so a lock held
+    for five minutes means something is wrong and should not block the next tick for
+    an hour.
+    """
+    key = f"{_DISPATCH_PREFIX}{name}"
+    token = _owner_token()
+
+    try:
+        client = _client()
+        acquired = bool(client.set(key, token, nx=True, ex=ttl_seconds))
+    except (redis.RedisError, KeyError) as exc:
+        # Same reasoning as provider_lock: Redis being down must not stop the pipeline.
+        # Proceeding risks a duplicate batch, which costs GPU time and nothing else --
+        # the write side is idempotent. Refusing would stop the pipeline entirely.
+        logger.warning("dispatch lock unavailable, proceeding without it: %s", exc)
+        yield True
+        return
+
+    if not acquired:
+        logger.debug("dispatch %s is already running", name)
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        try:
+            # Compare-and-delete, as in provider_lock: a plain DELETE would let a
+            # dispatch whose lock had already expired delete one another tick now holds.
+            client.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) end",
+                1,
+                key,
+                token,
+            )
+        except redis.RedisError as exc:
+            logger.warning("could not release dispatch lock %s: %s", name, exc)
+
+
+@contextmanager
+def provider_lock(slug: str, ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS) -> Iterator[bool]:
     """Hold the lock for `slug` if it is free. Yields whether it was acquired.
 
     Yielding False rather than raising: a provider already being polled is the normal
