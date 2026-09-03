@@ -188,6 +188,24 @@ sphere — fails permanently rather than retrying. Recomputing produces the same
 vectors, and ADR-0005's single vector space is exactly the invariant that must not
 degrade quietly.
 
+## After a reboot
+
+Double-click `start-desktop.bat` at the repository root, or:
+
+```bash
+powershell -File infrastructure\desktop\start-desktop.ps1
+```
+
+The Scheduled Task starts the runner at logon, so normally this just confirms
+everything is up. It exists for when that is not true — a dependency changed, the venv
+was rebuilt, the task was stopped and forgotten. It checks the credentials, syncs the
+`desktop-ml` group, reports whether torch actually has CUDA, starts the runner if it is
+not running, and waits for it to take its lock rather than assuming it did.
+
+It deliberately does **not** `git pull`. Changing which code claims production jobs
+should be a decision, not a side effect of checking that things are up. `-SkipSync`
+gives the report in a second instead of ten.
+
 ## Adding a handler
 
 The registry is the single source of truth: whatever is registered is what gets
