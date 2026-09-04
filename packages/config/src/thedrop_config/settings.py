@@ -185,6 +185,14 @@ class AISettings(BaseSettings):
         default=20, ge=1, le=200, alias="CLAIM_EXTRACT_MAX_STORIES_PER_TICK"
     )
 
+    #: Same knob as claim_extract_max_stories_per_tick, for the contradiction-check
+    #: stage that follows it (ADR-0020, ADR-0023). Kept separate rather than shared: the
+    #: two stages dispatch on different gates and there is no reason a tuning change to
+    #: one should silently retune the other.
+    contradiction_check_max_stories_per_tick: int = Field(
+        default=20, ge=1, le=200, alias="CONTRADICTION_CHECK_MAX_STORIES_PER_TICK"
+    )
+
     @property
     def is_usable(self) -> bool:
         """AI work may only be scheduled when enabled AND credentialed."""

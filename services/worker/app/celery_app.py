@@ -31,6 +31,7 @@ celery_app = Celery(
         "app.tasks.cluster",
         "app.tasks.score",
         "app.tasks.claims",
+        "app.tasks.contradictions",
         "app.tasks.verify",
         "app.tasks.publish",
     ],
@@ -67,6 +68,7 @@ celery_app.conf.update(
         "app.tasks.cluster.*": {"queue": "maintain"},
         "app.tasks.score.*": {"queue": "maintain"},
         "app.tasks.claims.*": {"queue": "maintain"},
+        "app.tasks.contradictions.*": {"queue": "maintain"},
         "app.tasks.verify.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
@@ -127,6 +129,13 @@ celery_app.conf.beat_schedule = {
     # fast tick would just re-scan a backlog that barely changed since the last one.
     "dispatch-claim-extraction-batches": {
         "task": "app.tasks.claims.dispatch_claim_extraction_batches",
+        "schedule": 300.0,
+    },
+    # Same cadence as claim extraction, and the same reasoning: a story is not
+    # eligible until extraction has already run on it, so a faster tick would just
+    # re-scan a backlog that barely changed since the last one.
+    "dispatch-contradiction-check-batches": {
+        "task": "app.tasks.contradictions.dispatch_contradiction_check_batches",
         "schedule": 300.0,
     },
     # Pure SQL like scoring, so it can run often. It only acts on claims still at

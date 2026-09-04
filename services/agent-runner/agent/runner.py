@@ -166,6 +166,7 @@ class Runner:
         "embeddings": "store_embeddings",
         "articleEntities": "store_entities",
         "storyClaims": "store_claims",
+        "storyContradictions": "store_contradictions",
     }
 
     def _deliver_side_effects(self, job: Job, result: dict[str, Any]) -> dict[str, Any] | None:

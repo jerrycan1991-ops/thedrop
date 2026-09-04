@@ -154,6 +154,31 @@ class ClaimsRequest(BaseModel):
         return self
 
 
+class ContradictionPairItem(BaseModel):
+    claim_id_a: str = Field(max_length=64, alias="claimIdA")
+    claim_id_b: str = Field(max_length=64, alias="claimIdB")
+    reason: str = Field(min_length=1, max_length=1000)
+
+    model_config = {"populate_by_name": True}
+
+
+class StoryContradictions(BaseModel):
+    """One story's contradiction-check result, or its failure. Same shape and same
+    reasoning as StoryClaims -- see its docstring."""
+
+    model_config = {"populate_by_name": True}
+
+    story_id: str = Field(max_length=64, alias="storyId")
+    contradictions: list[ContradictionPairItem] = Field(default_factory=list, max_length=64)
+    injection_detected: bool = Field(default=False, alias="injectionDetected")
+    error: str | None = Field(default=None, max_length=4000)
+
+
+class ContradictionsRequest(BaseModel):
+    model: str = Field(max_length=128)
+    items: list[StoryContradictions] = Field(min_length=1, max_length=64)
+
+
 class CompleteRequest(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
 
@@ -666,6 +691,162 @@ def store_claims(payload: ClaimsRequest, node: WorkerDep, db: SessionDep) -> dic
         # endpoint, the same way "stored" counts articles for the other two.
         "stored": len(payload.items) - len(unknown_stories),
         "claims": stored_claims,
+        "failed": failed_stories,
+        "unknown": unknown_stories,
+    }
+
+
+@router.post("/contradictions")
+def store_contradictions(
+    payload: ContradictionsRequest, node: WorkerDep, db: SessionDep
+) -> dict[str, Any]:
+    """Write desktop-found contradictions between a story's claims (PIPELINE.md §11).
+
+    A story's `contradictions_checked_at` is set on EVERY item in this payload,
+    success or failure, matching `claims_extracted_at`'s role for the same reason (see
+    the migration that added the column).
+
+    Deciding `disputed` vs. `refuted` is deterministic once a contradicting PAIR is
+    known -- only the pairing itself needed the model:
+
+      * one side already `authoritative`, the other not -> the other becomes
+        `refuted` (contradicted BY an authoritative source). The authoritative side
+        is untouched -- a single blog disputing a .gov statement does not weaken it.
+      * neither side authoritative, OR both are -> both become `disputed`. Two
+        genuinely authoritative sources disagreeing is a real, unresolved conflict,
+        not a reason to arbitrarily pick a winner between them.
+
+    A claim can appear in more than one reported pair. `refuted` wins over `disputed`
+    if a claim is due both from different pairs in the same payload -- it is the more
+    specific finding ("a primary source specifically contradicts this"), and a later,
+    weaker pairing must not downgrade it. `contradicted_by` accumulates every pair
+    naming that claim, regardless of which status wins, so the full picture stays
+    visible even though only one status can be stored.
+
+    An unresolvable claim id (unknown, or a malformed UUID -- these are model output,
+    not a guaranteed-well-formed value, same reasoning as store_claims' evidence
+    lookup) drops that one pair rather than failing the whole item.
+    """
+    provider = "anthropic" if payload.model.startswith("claude-") else "ollama"
+    now = datetime.now(UTC)
+    unknown_stories: list[str] = []
+    failed_stories = 0
+    # claim_id -> (verification_status, [{"claimId": ..., "reason": ...}, ...])
+    refuted, disputed = "refuted", "disputed"
+    severity = {disputed: 1, refuted: 2}
+    pending: dict[int, tuple[str, list[dict[str, str]]]] = {}
+    touched_stories: set[int] = set()
+
+    def _stage(claim_id: int, new_status: str, contradicts_public_id: str, reason: str) -> None:
+        entry = {"claimId": contradicts_public_id, "reason": reason}
+        if claim_id not in pending:
+            pending[claim_id] = (new_status, [entry])
+            return
+        current_status, entries = pending[claim_id]
+        entries.append(entry)
+        if severity[new_status] > severity[current_status]:
+            pending[claim_id] = (new_status, entries)
+        else:
+            pending[claim_id] = (current_status, entries)
+
+    for item in payload.items:
+        parsed_story_id = _parse_uuid(item.story_id)
+        story_id = (
+            db.scalar(select(Story.id).where(Story.public_id == parsed_story_id))
+            if parsed_story_id is not None
+            else None
+        )
+        if story_id is None:
+            unknown_stories.append(item.story_id)
+            continue
+
+        db.execute(
+            update(Story).where(Story.id == story_id).values(contradictions_checked_at=now)
+        )
+        touched_stories.add(story_id)
+
+        if item.error is not None:
+            failed_stories += 1
+            db.add(
+                AiRun(
+                    story_id=story_id,
+                    purpose="verify",
+                    provider=provider,
+                    model=payload.model,
+                    status="invalid_output",
+                    error=item.error[:4000],
+                )
+            )
+            continue
+
+        for pair in item.contradictions:
+            parsed_a = _parse_uuid(pair.claim_id_a)
+            parsed_b = _parse_uuid(pair.claim_id_b)
+            if parsed_a is None or parsed_b is None:
+                continue
+            rows = db.execute(
+                select(Claim.id, Claim.public_id, Claim.verification_status).where(
+                    Claim.public_id.in_([parsed_a, parsed_b]), Claim.story_id == story_id
+                )
+            ).all()
+            by_public_id = {str(r.public_id): (r.id, r.verification_status) for r in rows}
+            resolved_a = by_public_id.get(pair.claim_id_a)
+            resolved_b = by_public_id.get(pair.claim_id_b)
+            if resolved_a is None or resolved_b is None:
+                continue
+            a_id, a_status = resolved_a
+            b_id, b_status = resolved_b
+
+            if a_status == "authoritative" and b_status != "authoritative":
+                _stage(b_id, refuted, pair.claim_id_a, pair.reason)
+            elif b_status == "authoritative" and a_status != "authoritative":
+                _stage(a_id, refuted, pair.claim_id_b, pair.reason)
+            else:
+                _stage(a_id, disputed, pair.claim_id_b, pair.reason)
+                _stage(b_id, disputed, pair.claim_id_a, pair.reason)
+
+        db.add(
+            AiRun(
+                story_id=story_id,
+                purpose="verify",
+                provider=provider,
+                model=payload.model,
+                status="ok",
+                response_meta={"injectionDetected": item.injection_detected},
+            )
+        )
+
+    for claim_id, (final_status, entries) in pending.items():
+        existing = db.scalar(select(Claim.contradicted_by).where(Claim.id == claim_id)) or []
+        db.execute(
+            update(Claim)
+            .where(Claim.id == claim_id)
+            .values(
+                verification_status=final_status,
+                contradicted_by=[*existing, *entries],
+                verified_at=now,
+            )
+        )
+
+    db.commit()
+
+    if unknown_stories:
+        logger.warning(
+            "contradictions for unknown stories",
+            extra={"worker": node.name, "count": len(unknown_stories)},
+        )
+    logger.info(
+        "contradictions stored",
+        extra={
+            "worker": node.name,
+            "stories": len(touched_stories),
+            "claims_flagged": len(pending),
+            "failed": failed_stories,
+        },
+    )
+    return {
+        "stored": len(touched_stories),
+        "claimsFlagged": len(pending),
         "failed": failed_stories,
         "unknown": unknown_stories,
     }

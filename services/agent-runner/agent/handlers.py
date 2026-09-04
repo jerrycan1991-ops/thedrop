@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from agent import claims, embedding, entities
+from agent import claims, contradictions, embedding, entities
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,78 @@ def extract_claims(payload: dict[str, Any]) -> dict[str, Any]:
     return {"model": claims.model_name(), "storyClaims": results}
 
 
+@register("find_contradictions")
+def find_contradictions(payload: dict[str, Any]) -> dict[str, Any]:
+    """Check a batch of stories' already-extracted claims for contradictions
+    (PIPELINE.md §11).
+
+    One `agent.contradictions.find_contradictions()` call per story. Each job item's
+    `claims` list carries each claim's own id alongside its text/type/attribution,
+    ordered however the caller likes -- `find_contradictions()` returns indices into
+    THAT SAME order, so this handler resolves them straight back to claim ids with no
+    separate bookkeeping. Returns results under `storyContradictions`; the RUNNER
+    posts them and strips them before completing, same reason claims/embeddings/
+    entities never reach `jobs.result`.
+
+    A story whose check fails validation twice
+    (agent.contradictions.ContradictionCheckFailedError) is reported with an `error`
+    field rather than omitted -- an omitted story would be re-queued forever, the same
+    reasoning `extract_claims` uses for its own failures.
+    """
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise NonRetryableError("find_contradictions payload has no items")
+
+    results: list[dict[str, Any]] = []
+    for item in items:
+        story_id = (item or {}).get("id")
+        claim_list = (item or {}).get("claims")
+        if not story_id or not isinstance(claim_list, list) or not claim_list:
+            raise NonRetryableError(
+                f"find_contradictions item is missing id or claims: {item!r}"
+            )
+
+        try:
+            result = contradictions.find_contradictions(
+                [
+                    {
+                        "claim_text": c.get("text", ""),
+                        "claim_type": c.get("type", ""),
+                        "attributed_to": c.get("attributedTo", ""),
+                    }
+                    for c in claim_list
+                ]
+            )
+        except contradictions.ContradictionCheckFailedError as exc:
+            logger.warning(
+                "contradiction check failed for story",
+                extra={"storyId": story_id, "error": str(exc)},
+            )
+            results.append({"storyId": str(story_id), "error": str(exc)})
+            continue
+
+        results.append(
+            {
+                "storyId": str(story_id),
+                "contradictions": [
+                    {
+                        "claimIdA": claim_list[pair.claim_index_a]["id"],
+                        "claimIdB": claim_list[pair.claim_index_b]["id"],
+                        "reason": pair.reason,
+                    }
+                    for pair in result.contradictions
+                ],
+                "injectionDetected": result.injection_detected,
+            }
+        )
+
+    logger.info(
+        "checked contradictions",
+        extra={"stories": len(results), "failed": sum(1 for r in results if "error" in r)},
+    )
+    return {"model": contradictions.model_name(), "storyContradictions": results}
+
+
 if not entities.is_available():
     # Same fail-safe as embeddings: advertise only what this build can dispatch, so the
     # API never leases extraction to a desktop that cannot perform it.
@@ -222,6 +294,16 @@ if not claims.is_available():
         "Run `ollama pull %s` and confirm Ollama is running.",
         claims.model_name(),
         claims.model_name(),
+    )
+
+
+if not contradictions.is_available():
+    del _REGISTRY["find_contradictions"]
+    logger.warning(
+        "ollama is unreachable or %s is not pulled; not advertising "
+        "'find_contradictions'. Run `ollama pull %s` and confirm Ollama is running.",
+        contradictions.model_name(),
+        contradictions.model_name(),
     )
 
 

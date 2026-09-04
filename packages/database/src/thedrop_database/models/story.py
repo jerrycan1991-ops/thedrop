@@ -110,6 +110,11 @@ class Story(Base, PrimaryKeyMixin, PublicIdMixin, TimestampMixin):
     #: and a future dispatch query built on "does this story have claims yet" would
     #: retry a consistently-failing story forever instead of surfacing it.
     claims_extracted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When this story's claims were last checked against each other for
+    #: contradictions, successfully or not -- same reasoning as claims_extracted_at:
+    #: set on every attempt so a failed check is not indistinguishable from "never
+    #: attempted" and does not get retried forever.
+    contradictions_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     #: Carried into the evidence packet rather than silently dropped: what the sources
     #: disagree about, and what none of them answered.

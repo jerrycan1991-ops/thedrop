@@ -190,7 +190,7 @@ Each claim must be **atomic** (one assertion), carry a `claim_type`, and — for
 
 ## 11. Cross-source verification (DESKTOP)
 
-**Implemented so far:** `authoritative`, `corroborated` and `single_source` only, computed deterministically (`thedrop_database.verification`) — no model, runs on the VPS. `disputed` and `refuted` need a semantic judgement about whether two differently-worded claims conflict, which is real model work, not yet built. The `corroborated` rule's "reliability ≥ threshold" clause is also not applied yet, since no source has ever had its `reliability_score` actively computed (PIPELINE.md §9 is not built). See ADR-0022.
+**Implemented so far:** `authoritative`, `corroborated` and `single_source`, computed deterministically (`thedrop_database.verification`) — no model, runs on the VPS. See ADR-0022. `disputed` and `refuted` are also wired now: `services/agent-runner/agent/contradictions.py` runs on the desktop, on Ollama per explicit operator choice, and compares a story's already-extracted claims pairwise for semantic conflict — end to end (`thedrop_database.contradiction_queue` dispatches, `POST /api/v1/worker/contradictions` persists, with severity-based accumulation when a claim is touched by more than one contradicting pair). See ADR-0023, including its documented false-positive finding — this stage's output is not yet trusted for anything a reader treats as settled. The `corroborated` rule's "reliability ≥ threshold" clause is still not applied, since no source has ever had its `reliability_score` actively computed (PIPELINE.md §9 is not built).
 
 Per claim:
 
