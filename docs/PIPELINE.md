@@ -181,7 +181,7 @@ OPPORTUNITY = 0.22*viral
 
 Claude (Haiku tier) over the cluster, with source content passed as untrusted data (SECURITY.md §6). Output is a strict JSON schema, validated by Pydantic; invalid output is retried once, then fails the job.
 
-**Implemented so far:** the ollama path only (`services/agent-runner/agent/claims.py`), a deliberate, switchable deviation from Claude Haiku while local-model quality here is still being measured. See ADR-0020.
+**Implemented so far:** the ollama path only (`services/agent-runner/agent/claims.py`), a deliberate, switchable deviation from Claude Haiku while local-model quality here is still being measured, wired end to end (`thedrop_database.claim_queue` dispatches, `POST /api/v1/worker/claims` persists). See ADR-0020, including its dispatch-window-gate section — extraction has no automatic re-trigger when a story later gains a member, unlike scoring.
 
 Each claim must be **atomic** (one assertion), carry a `claim_type`, and — for `CLAIM`, `ALLEGATION`, `OFFICIAL_STATEMENT` — name the attributed entity. Extraction also records the exact supporting quote and its source for every claim, into `claim_evidence`.
 

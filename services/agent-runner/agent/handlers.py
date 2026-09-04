@@ -165,12 +165,15 @@ def extract_claims(payload: dict[str, Any]) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     for item in items:
-        story_id = (item or {}).get("storyId")
+        # "id", not "storyId": matches embed_articles/extract_entities's payload shape,
+        # which is what lets thedrop_database.dispatch.outstanding_article_ids -- generic
+        # over what "id" identifies, despite its name -- work unmodified for story-level
+        # dispatch too. The OUTGOING result below uses "storyId" deliberately; that is a
+        # different, already-established wire shape (POST /api/v1/worker/claims).
+        story_id = (item or {}).get("id")
         articles = (item or {}).get("articles")
         if not story_id or not isinstance(articles, list) or not articles:
-            raise NonRetryableError(
-                f"extract_claims item is missing storyId or articles: {item!r}"
-            )
+            raise NonRetryableError(f"extract_claims item is missing id or articles: {item!r}")
 
         try:
             result = claims.extract(articles)

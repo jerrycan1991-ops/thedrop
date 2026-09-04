@@ -241,6 +241,13 @@ def _build_user_message(articles: list[dict[str, str]]) -> str:
 
 
 def _call_ollama(messages: list[dict[str, str]]) -> str:
+    # No explicit num_ctx: Ollama's textbook default is 2048 tokens, which would
+    # silently truncate a multi-article evidence packet with no error. Verified
+    # empirically on this deployment (2026-09-04) that it is NOT truncating -- an
+    # 11,000+ token round trip correctly referenced content near the end of the input.
+    # Left unset rather than pinned, since the observed behavior already exceeds what
+    # a real evidence packet needs and an explicit num_ctx would only pre-allocate KV
+    # cache VRAM for a window this deployment does not currently require.
     with httpx.Client(timeout=180.0) as client:
         resp = client.post(
             f"{base_url()}/api/chat",

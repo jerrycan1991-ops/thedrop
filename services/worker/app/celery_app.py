@@ -30,6 +30,7 @@ celery_app = Celery(
         "app.tasks.extract",
         "app.tasks.cluster",
         "app.tasks.score",
+        "app.tasks.claims",
         "app.tasks.publish",
     ],
 )
@@ -64,6 +65,7 @@ celery_app.conf.update(
         "app.tasks.extract.*": {"queue": "maintain"},
         "app.tasks.cluster.*": {"queue": "maintain"},
         "app.tasks.score.*": {"queue": "maintain"},
+        "app.tasks.claims.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
 )
@@ -117,6 +119,13 @@ celery_app.conf.beat_schedule = {
     "score-us-relevance": {
         "task": "app.tasks.score.score_us_relevance_batch",
         "schedule": 60.0,
+    },
+    # Slower than the other desktop-bound dispatchers: a story is not even eligible
+    # until it is past its clustering join window (default 48h, claim_queue.py), so a
+    # fast tick would just re-scan a backlog that barely changed since the last one.
+    "dispatch-claim-extraction-batches": {
+        "task": "app.tasks.claims.dispatch_claim_extraction_batches",
+        "schedule": 300.0,
     },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",

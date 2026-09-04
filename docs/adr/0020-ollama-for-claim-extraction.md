@@ -92,6 +92,30 @@ it currently responds with the configured model loaded.
   tier) requires no schema change: `ai_runs.provider` and `claims.verifier_ai_run_id`
   already carry which model produced which row.
 
+## Dispatch: a window gate scoring does not need
+
+`thedrop_database.claim_queue.unclaimed_story_ids` requires `Story.last_activity_at`
+to be past `cluster_window_hours` (default 48h) before a story is eligible, on top of
+`claims_extracted_at IS NULL`. `scoring.unscored_story_ids` has no equivalent gate.
+
+The difference is cost and reversibility. Re-running `update_us_relevance` is a cheap,
+side-effect-free SQL recompute, so scoring a story before it is done accumulating
+members and simply never re-running is a non-issue. Claim extraction is a real model
+call, and nothing re-triggers it when a story gains a member after extraction already
+ran -- there is no "story changed, re-extract" hook anywhere in this pipeline yet.
+Dispatching early would bake an incomplete evidence packet in permanently, silently,
+for the story's entire lifetime. The window gate reuses `cluster_window_hours` itself
+(the same cutoff clustering already uses to decide whether a new article may still
+join a story), not a new constant, so "past the join window" means the same thing in
+both places by construction rather than by two configs happening to agree.
+
+This does not fully solve the problem -- a story that genuinely gets a late-joining
+article after 48 hours of inactivity still needs a manual re-extraction, exactly as a
+late joiner needs a manual rescore today. That gap is accepted, not fixed, matching
+what already exists for scoring; fixing it for real would mean a "story changed since
+its downstream stages last ran" signal that neither stage has, which is a bigger
+change than this ADR's scope.
+
 ## Related
 
 Discovered while building this: Claude Code's own tool-execution environment for this
