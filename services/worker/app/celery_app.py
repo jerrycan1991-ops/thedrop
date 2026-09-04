@@ -31,6 +31,7 @@ celery_app = Celery(
         "app.tasks.cluster",
         "app.tasks.score",
         "app.tasks.claims",
+        "app.tasks.verify",
         "app.tasks.publish",
     ],
 )
@@ -66,6 +67,7 @@ celery_app.conf.update(
         "app.tasks.cluster.*": {"queue": "maintain"},
         "app.tasks.score.*": {"queue": "maintain"},
         "app.tasks.claims.*": {"queue": "maintain"},
+        "app.tasks.verify.*": {"queue": "maintain"},
         "app.tasks.publish.*": {"queue": "publish"},
     },
 )
@@ -126,6 +128,13 @@ celery_app.conf.beat_schedule = {
     "dispatch-claim-extraction-batches": {
         "task": "app.tasks.claims.dispatch_claim_extraction_batches",
         "schedule": 300.0,
+    },
+    # Pure SQL like scoring, so it can run often. It only acts on claims still at
+    # UNVERIFIED, so a fast tick just means a newly-extracted claim gets a status
+    # sooner -- there is no work to redo on a claim already past that state.
+    "verify-claims": {
+        "task": "app.tasks.verify.verify_claims_batch",
+        "schedule": 60.0,
     },
     "reset-provider-quotas": {
         "task": "app.tasks.maintain.reset_provider_quotas",

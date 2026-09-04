@@ -190,6 +190,8 @@ Each claim must be **atomic** (one assertion), carry a `claim_type`, and — for
 
 ## 11. Cross-source verification (DESKTOP)
 
+**Implemented so far:** `authoritative`, `corroborated` and `single_source` only, computed deterministically (`thedrop_database.verification`) — no model, runs on the VPS. `disputed` and `refuted` need a semantic judgement about whether two differently-worded claims conflict, which is real model work, not yet built. The `corroborated` rule's "reliability ≥ threshold" clause is also not applied yet, since no source has ever had its `reliability_score` actively computed (PIPELINE.md §9 is not built). See ADR-0022.
+
 Per claim:
 
 | Evidence | Resulting status |
