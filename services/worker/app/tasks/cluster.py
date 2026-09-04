@@ -19,6 +19,7 @@ from thedrop_database.clustering import (
     cluster_pending,
     consolidate_stories,
     pending_clustering_count,
+    rejoin_stragglers,
 )
 
 from app.celery_app import celery_app
@@ -71,11 +72,15 @@ def cluster_ready_articles() -> dict[str, object]:
 
 @celery_app.task(name="app.tasks.cluster.consolidate_recent_stories")
 def consolidate_recent_stories() -> dict[str, object]:
-    """Merge stories that are the same event.
+    """Merge stories that are the same event, then reunite any singleton straggler
+    with a larger story it should have joined at the ORIGINAL join threshold.
 
     The counterweight to a design that deliberately over-splits: join-or-create refuses
     whenever it is unsure and the digest rule refuses again, and nothing else puts the
-    duplicates back together.
+    duplicates back together. `consolidate_stories` catches near-duplicates at its own
+    (stricter) threshold; `rejoin_stragglers` catches the gap consolidation cannot --
+    see its docstring for why that gap exists and why the fix is deliberately narrow
+    rather than a lower threshold applied everywhere.
 
     Runs less often than clustering. A merge is a bigger claim than a join, and there is
     nothing to consolidate until clustering has produced duplicates to consolidate.
@@ -84,7 +89,7 @@ def consolidate_recent_stories() -> dict[str, object]:
 
     with dispatch_lock("consolidation") as acquired:
         if not acquired:
-            return {"merges": 0, "status": "already_consolidating"}
+            return {"merges": 0, "rejoins": 0, "status": "already_consolidating"}
 
         with session_scope() as db:
             merges = consolidate_stories(
@@ -95,7 +100,19 @@ def consolidate_recent_stories() -> dict[str, object]:
                 max_fraction=settings.ai.entity_guard_max_doc_fraction,
                 min_floor=settings.ai.entity_guard_min_doc_floor,
             )
+            # After consolidation, not before: a merge can turn a singleton straggler's
+            # target into a larger story, or turn what WAS the target into a singleton
+            # itself (absorbed by something else) -- running this second reads the
+            # state consolidation actually left behind.
+            rejoins = rejoin_stragglers(
+                db,
+                window_hours=settings.ai.cluster_window_hours,
+                join_threshold=settings.ai.cluster_join_threshold,
+                max_rejoins=settings.ai.cluster_max_merges_per_pass,
+                max_fraction=settings.ai.entity_guard_max_doc_fraction,
+                min_floor=settings.ai.entity_guard_min_doc_floor,
+            )
 
-    if merges:
-        logger.info("consolidated", extra={"merges": len(merges)})
-    return {"merges": len(merges)}
+    if merges or rejoins:
+        logger.info("consolidated", extra={"merges": len(merges), "rejoins": len(rejoins)})
+    return {"merges": len(merges), "rejoins": len(rejoins)}

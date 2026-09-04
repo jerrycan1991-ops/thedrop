@@ -823,3 +823,122 @@ def consolidate_stories(
     if merges:
         logger.info("consolidated stories", extra={"merges": len(merges)})
     return merges
+
+
+@dataclass(frozen=True)
+class Rejoin:
+    survivor_id: int
+    absorbed_id: int
+    similarity: float
+    shared_entities: int
+
+
+def rejoin_stragglers(
+    db: Session,
+    *,
+    window_hours: int = DEFAULT_WINDOW_HOURS,
+    join_threshold: float = DEFAULT_JOIN_THRESHOLD,
+    max_rejoins: int = 50,
+    max_fraction: float = DEFAULT_MAX_DOC_FRACTION,
+    min_floor: int = DEFAULT_MIN_DOC_FLOOR,
+) -> list[Rejoin]:
+    """Reunite a singleton story with a larger story it should have joined, at the
+    ORIGINAL join threshold -- not consolidation's stricter merge_threshold.
+
+    A gap `consolidate_stories` cannot close. A pair can miss the live join path for
+    reasons that have nothing to do with whether they are the same event: the digest
+    rule declining a story-spanning article, or two near-duplicate articles landing in
+    the same dispatch batch before either existed as a candidate for the other (FOUND
+    IN PRODUCTION: two singleton "Iran fires on its Gulf neighbors" stories, articles
+    discovered under four hours apart, that never got a chance to be compared). Once a
+    pair becomes two separate stories, `consolidate_stories` is the only thing that
+    puts stories back together -- and its threshold (0.90) is DELIBERATELY higher than
+    the join threshold (0.82), because merging asserts everything already in BOTH
+    stories is one event, a stronger claim than a single join ever makes. A pair
+    scoring between 0.82 and 0.90 can therefore join a story fresh but can never be
+    reunited with one after the fact -- backwards, since the same evidence should
+    support the same decision whichever direction it runs.
+
+    Deliberately narrower than lowering `consolidate_stories`' threshold everywhere:
+
+      * only a story with exactly ONE member article is a rejoin candidate. A story
+        with two or more has already demonstrated it is a real, distinct cluster, not
+        an under-joined straggler -- lowering the bar for that case is exactly what
+        `merge_threshold`'s higher bar exists to prevent.
+      * a straggler may only join a LARGER story (more member articles). This is "the
+        straggler finishes the join it missed", not two arbitrary stories merging into
+        whichever happens to be older, which is `consolidate_stories`' rule.
+      * the guard and threshold are otherwise identical to a live join: the same
+        `story_guard_entities` intersection, `join_threshold` rather than
+        `merge_threshold`. If a fresh article with this exact centroid would have
+        joined the larger story today, the straggler should too.
+
+    Two singletons never rejoin each other here, even when they are obviously the same
+    event (the production example above): neither is "larger", so neither is a valid
+    target under this function's own rule. That case is `consolidate_stories`' job, at
+    its higher bar -- left there deliberately rather than widened, per the operator's
+    explicit choice for a narrow, targeted pass over a general threshold change.
+
+    The larger story survives (unlike `consolidate_stories`, where the older one does):
+    a singleton rejoining an established multi-source story is exactly what a live join
+    would have produced.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    stories = db.execute(
+        select(Story.id, Story.centroid, func.count(StorySource.id).label("article_count"))
+        .join(StorySource, StorySource.story_id == Story.id)
+        .where(
+            Story.centroid.is_not(None),
+            Story.merged_into_id.is_(None),
+            Story.last_activity_at >= cutoff,
+        )
+        .group_by(Story.id, Story.centroid)
+    ).all()
+
+    singletons = [(sid, centroid) for sid, centroid, count in stories if count == 1]
+    non_singletons = [(sid, centroid) for sid, centroid, count in stories if count > 1]
+
+    rejoins: list[Rejoin] = []
+    absorbed: set[int] = set()
+
+    for straggler_id, straggler_centroid in singletons:
+        if len(rejoins) >= max_rejoins:
+            break
+        straggler_entities = story_guard_entities(
+            db, straggler_id, max_fraction=max_fraction, min_floor=min_floor
+        )
+        if not straggler_entities:
+            continue
+
+        best: tuple[int, float, int] | None = None
+        for other_id, other_centroid in non_singletons:
+            if other_id in absorbed:
+                continue
+            similarity = _cosine(list(straggler_centroid), list(other_centroid))
+            if similarity < join_threshold:
+                continue
+            shared = straggler_entities & story_guard_entities(
+                db, other_id, max_fraction=max_fraction, min_floor=min_floor
+            )
+            if not shared:
+                continue
+            if best is None or similarity > best[1]:
+                best = (other_id, similarity, len(shared))
+
+        if best is None:
+            continue
+        other_id, similarity, shared_count = best
+        merge_stories(db, other_id, straggler_id)
+        absorbed.add(straggler_id)
+        rejoins.append(
+            Rejoin(
+                survivor_id=other_id,
+                absorbed_id=straggler_id,
+                similarity=round(similarity, 4),
+                shared_entities=shared_count,
+            )
+        )
+
+    if rejoins:
+        logger.info("rejoined stragglers", extra={"rejoins": len(rejoins)})
+    return rejoins

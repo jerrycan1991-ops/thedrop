@@ -100,7 +100,8 @@ Incremental, online:
    neither. It is not a second source for any of them.
 4. Else create a new `story`.
 5. Periodic consolidation merges stories that are the same event: centroid similarity at or above `CLUSTER_MERGE_THRESHOLD` (higher than the join threshold) **and** a shared discriminative entity — the same guard, so consolidation cannot become a way around it. The older story survives and the absorbed row is kept with `merged_into_id` set, so the merge stays auditable. This is pairwise and runs on the VPS.
-6. Splitting a cluster whose intra-similarity collapsed is a re-partitioning problem, needs HDBSCAN, and is therefore a desktop job (ADR-0015). Not yet built.
+6. Immediately after consolidation, a narrower pass reunites a singleton story with a larger story it should have joined, at the ORIGINAL join threshold rather than the merge threshold — the merge threshold's gap between 0.82 and 0.90 otherwise means a pair that could join fresh can never be reunited once split. Scoped deliberately narrow (singleton-into-larger only, never singleton-into-singleton) rather than lowering the merge threshold everywhere. See ADR-0021.
+7. Splitting a cluster whose intra-similarity collapsed is a re-partitioning problem, needs HDBSCAN, and is therefore a desktop job (ADR-0015). Not yet built.
 
 Entity overlap is required because embeddings alone happily merge "shooting in Ohio" with "shooting in Nevada". That is a correctness guard, not an optimization.
 
